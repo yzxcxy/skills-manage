@@ -1,0 +1,22 @@
+{
+  "featureId": "central-skills-view",
+  "reviewedAt": "2026-04-09T12:53:05Z",
+  "commitId": "ecc7d25",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The Central Skills list, link badges, and refresh/search wiring look sound, but the install flow exposes a copy-vs-symlink choice that is never honored during installation.",
+    "issues": [
+      {
+        "file": "src/components/central/InstallDialog.tsx",
+        "line": 94,
+        "severity": "blocking",
+        "description": "The dialog renders a `Copy` radio option, but `handleConfirm()` ignores `installMethod` and always calls `onInstall(skill.id, agentIds)`. That flows into `centralSkillsStore.installSkill()` and `batch_install_to_agents()`, both of which only support the existing symlink path. As a result, choosing \"Copy\" still creates symlinks, so the primary install action lies to the user and the copy install mode required by this milestone is not actually implemented."
+      }
+    ]
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": null,
+  "summary": "Fail. The install dialog's copy option is dead UI; installs always go through the symlink-only backend path."
+}
