@@ -1,15 +1,29 @@
+import { Routes, Route, Navigate } from "react-router-dom";
+import { AppShell } from "@/components/layout/AppShell";
+import { PlatformView } from "@/pages/PlatformView";
+import { CentralSkillsView } from "@/pages/CentralSkillsView";
+import { SkillDetail } from "@/pages/SkillDetail";
+import { CollectionView } from "@/pages/CollectionView";
+import { SettingsView } from "@/pages/SettingsView";
+
 function App() {
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <h1 className="text-4xl font-bold mb-4">Skills Manager</h1>
-          <p className="text-muted-foreground">
-            AI Agent Skills management across all platforms
-          </p>
-        </div>
-      </div>
-    </div>
+    <Routes>
+      <Route path="/" element={<AppShell />}>
+        {/* Default redirect to Central Skills */}
+        <Route index element={<Navigate to="/central" replace />} />
+        {/* Platform view: lists skills for a specific agent */}
+        <Route path="platform/:agentId" element={<PlatformView />} />
+        {/* Central Skills: canonical ~/.agents/skills/ view */}
+        <Route path="central" element={<CentralSkillsView />} />
+        {/* Skill detail page */}
+        <Route path="skill/:skillId" element={<SkillDetail />} />
+        {/* Collection view */}
+        <Route path="collection/:collectionId" element={<CollectionView />} />
+        {/* Settings */}
+        <Route path="settings" element={<SettingsView />} />
+      </Route>
+    </Routes>
   );
 }
 
