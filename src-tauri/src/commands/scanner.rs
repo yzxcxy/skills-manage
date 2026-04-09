@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::Utc;
@@ -173,6 +173,10 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     let mut total_skills: usize = 0;
     let mut skills_by_agent: HashMap<String, usize> = HashMap::new();
 
+    // Accumulate every skill ID discovered in this scan so we can purge stale
+    // rows from the database once all directories have been walked.
+    let mut all_found_skill_ids: HashSet<String> = HashSet::new();
+
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
         let dir = Path::new(&agent.global_skills_dir);
@@ -182,13 +186,18 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             // Mark agent as not detected and record zero count.
             let _ = db::update_agent_detected(pool, &agent.id, false).await;
             skills_by_agent.insert(agent.id.clone(), 0);
+            // Remove every installation row for this agent — the directory is gone.
+            let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
             continue;
         }
 
         let _ = db::update_agent_detected(pool, &agent.id, true).await;
         let scanned = scan_directory(dir, is_central);
 
+        let found_ids: Vec<String> = scanned.iter().map(|s| s.id.clone()).collect();
+
         for skill in &scanned {
+            all_found_skill_ids.insert(skill.id.clone());
             let now = Utc::now().to_rfc3339();
 
             let db_skill = Skill {
@@ -208,15 +217,20 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             };
             db::upsert_skill(pool, &db_skill).await?;
 
+            // Bug fix: store the skill *directory* path, not the SKILL.md file path.
             let installation = SkillInstallation {
                 skill_id: skill.id.clone(),
                 agent_id: agent.id.clone(),
-                installed_path: skill.file_path.clone(),
+                installed_path: skill.dir_path.clone(),
                 link_type: skill.link_type.clone(),
                 symlink_target: skill.symlink_target.clone(),
             };
             db::upsert_skill_installation(pool, &installation).await?;
         }
+
+        // Reconciliation: remove installation rows for skills no longer present
+        // in this agent's directory.
+        db::delete_stale_skill_installations(pool, &agent.id, &found_ids).await?;
 
         let count = scanned.len();
         total_skills += count;
@@ -234,6 +248,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
 
         let scanned = scan_directory(dir, false);
         for skill in &scanned {
+            all_found_skill_ids.insert(skill.id.clone());
             let now = Utc::now().to_rfc3339();
             let db_skill = Skill {
                 id: skill.id.clone(),
@@ -250,6 +265,13 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         }
         total_skills += scanned.len();
     }
+
+    // ── Global reconciliation ─────────────────────────────────────────────────
+    // Remove skills (and their installation records) that were not found in
+    // any scanned scope during this run. This purges rows left behind when
+    // skills are deleted from disk between scans.
+    let found_ids_vec: Vec<String> = all_found_skill_ids.into_iter().collect();
+    db::delete_skills_not_in_scope(pool, &found_ids_vec).await?;
 
     Ok(ScanResult {
         total_skills,
@@ -780,5 +802,133 @@ mod tests {
 
         assert_eq!(result.skills_by_agent.get("agent-a").copied(), Some(2));
         assert_eq!(result.skills_by_agent.get("agent-b").copied(), Some(1));
+    }
+
+    // ── Regression: Bug 1 — installed_path must be the skill directory ────────
+
+    /// installed_path should point to the skill directory, not to the SKILL.md
+    /// file inside it.
+    #[tokio::test]
+    async fn test_installed_path_is_skill_directory_not_skill_md() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        let test_agent = db::Agent {
+            id: "path-agent".to_string(),
+            display_name: "Path Agent".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &test_agent).await.unwrap();
+
+        let skill_dir =
+            create_skill_dir(tmp.path(), "my-skill", &valid_skill_md("My Skill", "desc"));
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let installations = db::get_skill_installations(&pool, "my-skill")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1, "Expected exactly one installation record");
+
+        let inst = &installations[0];
+        // installed_path must NOT be the SKILL.md file path.
+        assert!(
+            !inst.installed_path.ends_with("SKILL.md"),
+            "installed_path should not point to the SKILL.md file; got: {}",
+            inst.installed_path
+        );
+        // installed_path must equal the skill directory path.
+        assert_eq!(
+            inst.installed_path,
+            skill_dir.to_string_lossy().as_ref(),
+            "installed_path should be the skill directory, not the SKILL.md inside it"
+        );
+    }
+
+    // ── Regression: Bug 2 — rescan removes stale skills from DB ──────────────
+
+    /// After removing a skill from disk and rescanning, the corresponding rows
+    /// must no longer appear in skills or skill_installations queries.
+    #[tokio::test]
+    async fn test_rescan_removes_deleted_skills_from_db() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        let test_agent = db::Agent {
+            id: "stale-agent".to_string(),
+            display_name: "Stale Agent".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &test_agent).await.unwrap();
+
+        // Create two skills on disk.
+        create_skill_dir(
+            tmp.path(),
+            "skill-keep",
+            &valid_skill_md("Keep Skill", "stays"),
+        );
+        create_skill_dir(
+            tmp.path(),
+            "skill-remove",
+            &valid_skill_md("Remove Skill", "will be deleted"),
+        );
+
+        // First scan — both skills should be persisted.
+        scan_all_skills_impl(&pool).await.unwrap();
+        let skills_first = db::get_skills_by_agent(&pool, "stale-agent")
+            .await
+            .unwrap();
+        assert_eq!(skills_first.len(), 2, "Both skills should be in DB after first scan");
+
+        // Remove "skill-remove" from disk.
+        fs::remove_dir_all(tmp.path().join("skill-remove")).unwrap();
+
+        // Second scan — "skill-remove" must disappear from the DB.
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let skills_after = db::get_skills_by_agent(&pool, "stale-agent")
+            .await
+            .unwrap();
+        assert_eq!(
+            skills_after.len(),
+            1,
+            "Only one skill should remain after rescan"
+        );
+        assert_eq!(
+            skills_after[0].id, "skill-keep",
+            "The surviving skill should be 'skill-keep'"
+        );
+
+        // The deleted skill must also be gone from the skills table.
+        let stale_skill = db::get_skill_by_id(&pool, "skill-remove").await.unwrap();
+        assert!(
+            stale_skill.is_none(),
+            "skill-remove should be removed from the skills table after rescan"
+        );
+
+        // No orphaned installation record should remain.
+        let stale_inst = db::get_skill_installations(&pool, "skill-remove")
+            .await
+            .unwrap();
+        assert!(
+            stale_inst.is_empty(),
+            "skill-remove's installation record should be removed after rescan"
+        );
     }
 }

@@ -457,6 +457,102 @@ pub async fn delete_skill_installation(
         .map_err(|e| e.to_string())
 }
 
+/// Remove installation records for a given agent where the skill ID is NOT in
+/// `found_skill_ids`. Pass an empty slice to remove ALL installations for the
+/// agent (used when the agent's skills directory no longer exists).
+pub async fn delete_stale_skill_installations(
+    pool: &DbPool,
+    agent_id: &str,
+    found_skill_ids: &[String],
+) -> Result<(), String> {
+    if found_skill_ids.is_empty() {
+        return sqlx::query("DELETE FROM skill_installations WHERE agent_id = ?")
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+
+    let placeholders = found_skill_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM skill_installations WHERE agent_id = ? AND skill_id NOT IN ({})",
+        placeholders
+    );
+
+    let mut q = sqlx::query(&sql).bind(agent_id);
+    for id in found_skill_ids {
+        q = q.bind(id.as_str());
+    }
+    q.execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Delete skills whose IDs are NOT in `found_skill_ids`. Also cascades to
+/// remove any orphaned `skill_installations` rows for those skills.
+///
+/// This is the global reconciliation step run after a full scan to purge rows
+/// for skills that no longer exist on disk in any scanned scope.
+///
+/// Pass an empty slice to delete ALL skills (used only when every scanned
+/// directory is empty or missing).
+pub async fn delete_skills_not_in_scope(
+    pool: &DbPool,
+    found_skill_ids: &[String],
+) -> Result<(), String> {
+    if found_skill_ids.is_empty() {
+        // Nothing found — delete all installation records first, then all skills.
+        sqlx::query("DELETE FROM skill_installations")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        return sqlx::query("DELETE FROM skills")
+            .execute(pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+
+    let placeholders = found_skill_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Cascade: remove installation rows for skills that are no longer on disk.
+    let install_sql = format!(
+        "DELETE FROM skill_installations WHERE skill_id NOT IN ({})",
+        placeholders
+    );
+    let mut q = sqlx::query(&install_sql);
+    for id in found_skill_ids {
+        q = q.bind(id.as_str());
+    }
+    q.execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Remove the stale skills themselves.
+    let skill_sql = format!(
+        "DELETE FROM skills WHERE id NOT IN ({})",
+        placeholders
+    );
+    let mut q2 = sqlx::query(&skill_sql);
+    for id in found_skill_ids {
+        q2 = q2.bind(id.as_str());
+    }
+    q2.execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Retrieve all installation records for a given skill.
 pub async fn get_skill_installations(
     pool: &DbPool,
