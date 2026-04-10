@@ -19,6 +19,12 @@ export interface CustomAgentConfig {
   global_skills_dir: string;
 }
 
+export interface UpdateCustomAgentConfig {
+  display_name: string;
+  category?: string;
+  global_skills_dir: string;
+}
+
 // ─── Scan Types ───────────────────────────────────────────────────────────────
 
 export interface ScanResult {

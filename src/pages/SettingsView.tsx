@@ -1,4 +1,263 @@
+import { useEffect, useState } from "react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { usePlatformStore } from "@/stores/platformStore";
+import { AddDirectoryDialog } from "@/components/settings/AddDirectoryDialog";
+import { PlatformDialog } from "@/components/settings/PlatformDialog";
+import { AgentWithStatus, ScanDirectory } from "@/types";
+
+// ─── App constants ────────────────────────────────────────────────────────────
+
+const APP_VERSION = "0.1.0";
+const DB_PATH = "~/.skillsmanage/db.sqlite";
+
+// ─── ScanDirectoryRow ─────────────────────────────────────────────────────────
+
+interface ScanDirectoryRowProps {
+  dir: ScanDirectory;
+  onRemove: () => void;
+  onToggle: (active: boolean) => void;
+  isRemoving: boolean;
+}
+
+function ScanDirectoryRow({ dir, onRemove, onToggle, isRemoving }: ScanDirectoryRowProps) {
+  return (
+    <div className="flex items-center gap-3 py-2.5 px-4 border-b border-border/50 last:border-0">
+      <FolderOpen className="size-4 text-muted-foreground shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{dir.path}</div>
+        {dir.label && (
+          <div className="text-xs text-muted-foreground mt-0.5">{dir.label}</div>
+        )}
+        {dir.is_builtin && (
+          <div className="text-xs text-muted-foreground mt-0.5">内置目录</div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {/* Toggle for non-builtin dirs (built-in dirs are always active) */}
+        {!dir.is_builtin && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              {dir.is_active ? "启用" : "禁用"}
+            </span>
+            <Switch
+              checked={dir.is_active}
+              onCheckedChange={onToggle}
+              aria-label={`${dir.is_active ? "禁用" : "启用"} ${dir.path}`}
+            />
+          </div>
+        )}
+        {/* Remove button for non-builtin dirs */}
+        {!dir.is_builtin && (
+          <button
+            onClick={onRemove}
+            disabled={isRemoving}
+            aria-label={`删除目录 ${dir.path}`}
+            className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isRemoving ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="size-3.5" />
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CustomPlatformRow ────────────────────────────────────────────────────────
+
+interface CustomPlatformRowProps {
+  agent: AgentWithStatus;
+  onEdit: () => void;
+  onRemove: () => void;
+  isRemoving: boolean;
+}
+
+function CustomPlatformRow({ agent, onEdit, onRemove, isRemoving }: CustomPlatformRowProps) {
+  return (
+    <div className="flex items-center gap-3 py-2.5 px-4 border-b border-border/50 last:border-0">
+      <Cpu className="size-4 text-muted-foreground shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{agent.display_name}</div>
+        <div className="text-xs text-muted-foreground truncate mt-0.5">
+          {agent.global_skills_dir}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onEdit}
+          aria-label={`编辑平台 ${agent.display_name}`}
+        >
+          <Pencil className="size-3.5" />
+          <span>编辑</span>
+        </Button>
+        <button
+          onClick={onRemove}
+          disabled={isRemoving}
+          aria-label={`删除平台 ${agent.display_name}`}
+          className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isRemoving ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="size-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SettingsView ─────────────────────────────────────────────────────────────
+
 export function SettingsView() {
+  // ── Store State ────────────────────────────────────────────────────────────
+
+  const scanDirectories = useSettingsStore((s) => s.scanDirectories);
+  const isLoadingScanDirs = useSettingsStore((s) => s.isLoadingScanDirs);
+  const loadScanDirectories = useSettingsStore((s) => s.loadScanDirectories);
+  const addScanDirectory = useSettingsStore((s) => s.addScanDirectory);
+  const removeScanDirectory = useSettingsStore((s) => s.removeScanDirectory);
+  const toggleScanDirectory = useSettingsStore((s) => s.toggleScanDirectory);
+  const addCustomAgent = useSettingsStore((s) => s.addCustomAgent);
+  const updateCustomAgent = useSettingsStore((s) => s.updateCustomAgent);
+  const removeCustomAgent = useSettingsStore((s) => s.removeCustomAgent);
+
+  const agents = usePlatformStore((s) => s.agents);
+  const rescan = usePlatformStore((s) => s.rescan);
+
+  // Custom agents are those that are not built-in.
+  const customAgents = agents.filter((a) => !a.is_builtin);
+
+  // ── Local State ────────────────────────────────────────────────────────────
+
+  const [isAddDirOpen, setIsAddDirOpen] = useState(false);
+  const [isPlatformDialogOpen, setIsPlatformDialogOpen] = useState(false);
+  const [editingPlatform, setEditingPlatform] = useState<AgentWithStatus | null>(null);
+  const [removingDir, setRemovingDir] = useState<string | null>(null);
+  const [removingAgent, setRemovingAgent] = useState<string | null>(null);
+  const [scanDirError, setScanDirError] = useState<string | null>(null);
+  const [platformError, setPlatformError] = useState<string | null>(null);
+
+  // ── Load on mount ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    loadScanDirectories();
+  }, [loadScanDirectories]);
+
+  // ── Scan Directories Handlers ──────────────────────────────────────────────
+
+  async function handleAddDirectory(path: string) {
+    setScanDirError(null);
+    try {
+      await addScanDirectory(path);
+      // Trigger rescan after adding a directory.
+      await rescan();
+    } catch (err) {
+      setScanDirError(String(err));
+      throw err; // Re-throw so the dialog knows it failed
+    }
+  }
+
+  async function handleRemoveDirectory(path: string) {
+    setRemovingDir(path);
+    setScanDirError(null);
+    try {
+      await removeScanDirectory(path);
+      // Trigger rescan after removing a directory.
+      await rescan();
+    } catch (err) {
+      setScanDirError(String(err));
+    } finally {
+      setRemovingDir(null);
+    }
+  }
+
+  /**
+   * Toggle the active state of a custom scan directory (local UI state only).
+   * The backend does not yet have a toggle command, so this only updates
+   * the in-memory Zustand state.
+   */
+  function handleToggleDirectory(path: string, active: boolean) {
+    toggleScanDirectory(path, active);
+  }
+
+  // ── Custom Platform Handlers ───────────────────────────────────────────────
+
+  function handleOpenAddPlatform() {
+    setEditingPlatform(null);
+    setPlatformError(null);
+    setIsPlatformDialogOpen(true);
+  }
+
+  function handleOpenEditPlatform(agent: AgentWithStatus) {
+    setEditingPlatform(agent);
+    setPlatformError(null);
+    setIsPlatformDialogOpen(true);
+  }
+
+  async function handleAddPlatform(displayName: string, globalSkillsDir: string) {
+    setPlatformError(null);
+    try {
+      await addCustomAgent({
+        display_name: displayName,
+        global_skills_dir: globalSkillsDir,
+      });
+      // Refresh agents + rescan to show new platform in sidebar.
+      await rescan();
+    } catch (err) {
+      setPlatformError(String(err));
+      throw err;
+    }
+  }
+
+  async function handleEditPlatform(displayName: string, globalSkillsDir: string) {
+    if (!editingPlatform) return;
+    setPlatformError(null);
+    try {
+      await updateCustomAgent(editingPlatform.id, {
+        display_name: displayName,
+        global_skills_dir: globalSkillsDir,
+      });
+      // Refresh agents + rescan.
+      await rescan();
+    } catch (err) {
+      setPlatformError(String(err));
+      throw err;
+    }
+  }
+
+  async function handleRemovePlatform(agentId: string) {
+    setRemovingAgent(agentId);
+    setPlatformError(null);
+    try {
+      await removeCustomAgent(agentId);
+      // Refresh agents.
+      await rescan();
+    } catch (err) {
+      setPlatformError(String(err));
+    } finally {
+      setRemovingAgent(null);
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -7,11 +266,151 @@ export function SettingsView() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
-        <div className="text-sm text-muted-foreground">
-          Settings page — coming in next milestone
-        </div>
+      <div className="flex-1 overflow-auto p-6 space-y-6 max-w-3xl">
+
+        {/* ── Section 1: Scan Directories ──────────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>扫描目录</CardTitle>
+                <CardDescription className="mt-1">
+                  管理 skills 扫描的目录列表。内置目录不可删除。
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsAddDirOpen(true)}
+                aria-label="添加项目目录"
+              >
+                <Plus className="size-3.5" />
+                <span>添加目录</span>
+              </Button>
+            </div>
+          </CardHeader>
+
+          <CardContent>
+            {scanDirError && (
+              <p className="text-xs text-destructive mb-3" role="alert">
+                {scanDirError}
+              </p>
+            )}
+
+            {isLoadingScanDirs ? (
+              <div className="flex items-center gap-2 py-6 text-muted-foreground text-sm justify-center">
+                <Loader2 className="size-4 animate-spin" />
+                <span>加载中...</span>
+              </div>
+            ) : scanDirectories.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                暂无扫描目录
+              </p>
+            ) : (
+              <div className="rounded-lg border border-border overflow-hidden">
+                {scanDirectories.map((dir) => (
+                  <ScanDirectoryRow
+                    key={dir.id}
+                    dir={dir}
+                    onRemove={() => handleRemoveDirectory(dir.path)}
+                    onToggle={(active) => handleToggleDirectory(dir.path, active)}
+                    isRemoving={removingDir === dir.path}
+                  />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ── Section 2: Custom Platforms ───────────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>自定义平台</CardTitle>
+                <CardDescription className="mt-1">
+                  注册自定义 AI 平台，添加后可在侧边栏中查看和管理其 skills。
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenAddPlatform}
+                aria-label="添加自定义平台"
+              >
+                <Plus className="size-3.5" />
+                <span>添加平台</span>
+              </Button>
+            </div>
+          </CardHeader>
+
+          <CardContent>
+            {platformError && (
+              <p className="text-xs text-destructive mb-3" role="alert">
+                {platformError}
+              </p>
+            )}
+
+            {customAgents.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                暂无自定义平台。点击「添加平台」注册新平台。
+              </p>
+            ) : (
+              <div className="rounded-lg border border-border overflow-hidden">
+                {customAgents.map((agent) => (
+                  <CustomPlatformRow
+                    key={agent.id}
+                    agent={agent}
+                    onEdit={() => handleOpenEditPlatform(agent)}
+                    onRemove={() => handleRemovePlatform(agent.id)}
+                    isRemoving={removingAgent === agent.id}
+                  />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ── Section 3: About ────────────────────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <CardTitle>关于</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <Info className="size-4 text-muted-foreground shrink-0" />
+                <div>
+                  <div className="text-xs text-muted-foreground">应用版本</div>
+                  <div className="text-sm font-medium">skills-manage v{APP_VERSION}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Database className="size-4 text-muted-foreground shrink-0" />
+                <div>
+                  <div className="text-xs text-muted-foreground">数据库路径</div>
+                  <div className="text-sm font-medium font-mono">{DB_PATH}</div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* ── Dialogs ────────────────────────────────────────────────────────── */}
+      <AddDirectoryDialog
+        open={isAddDirOpen}
+        onOpenChange={setIsAddDirOpen}
+        onAdd={handleAddDirectory}
+      />
+
+      <PlatformDialog
+        open={isPlatformDialogOpen}
+        onOpenChange={setIsPlatformDialogOpen}
+        platform={editingPlatform}
+        onAdd={handleAddPlatform}
+        onEdit={handleEditPlatform}
+      />
     </div>
   );
 }

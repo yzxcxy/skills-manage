@@ -1,0 +1,382 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { SettingsView } from "../pages/SettingsView";
+import { ScanDirectory, AgentWithStatus } from "../types";
+
+// Mock stores
+vi.mock("../stores/settingsStore", () => ({
+  useSettingsStore: vi.fn(),
+}));
+
+vi.mock("../stores/platformStore", () => ({
+  usePlatformStore: vi.fn(),
+}));
+
+import { useSettingsStore } from "../stores/settingsStore";
+import { usePlatformStore } from "../stores/platformStore";
+
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+const mockBuiltinDir: ScanDirectory = {
+  id: 1,
+  path: "~/.agents/skills/",
+  label: "Central Skills",
+  is_active: true,
+  is_builtin: true,
+  added_at: "2026-01-01T00:00:00Z",
+};
+
+const mockCustomDir: ScanDirectory = {
+  id: 2,
+  path: "~/projects/my-project",
+  label: "My Project",
+  is_active: true,
+  is_builtin: false,
+  added_at: "2026-01-02T00:00:00Z",
+};
+
+const mockCustomAgent: AgentWithStatus = {
+  id: "custom-qclaw",
+  display_name: "QClaw",
+  category: "other",
+  global_skills_dir: "~/.qclaw/skills/",
+  is_detected: false,
+  is_builtin: false,
+  is_enabled: true,
+};
+
+const mockBuiltinAgent: AgentWithStatus = {
+  id: "claude-code",
+  display_name: "Claude Code",
+  category: "coding",
+  global_skills_dir: "~/.claude/skills/",
+  is_detected: true,
+  is_builtin: true,
+  is_enabled: true,
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function setupMocks({
+  scanDirs = [] as ScanDirectory[],
+  isLoadingScanDirs = false,
+  agents = [] as AgentWithStatus[],
+  loadScanDirectories = vi.fn(),
+  addScanDirectory = vi.fn(),
+  removeScanDirectory = vi.fn(),
+  toggleScanDirectory = vi.fn(),
+  addCustomAgent = vi.fn(),
+  updateCustomAgent = vi.fn(),
+  removeCustomAgent = vi.fn(),
+  rescan = vi.fn(),
+} = {}) {
+  vi.mocked(useSettingsStore).mockImplementation((selector) =>
+    selector({
+      scanDirectories: scanDirs,
+      isLoadingScanDirs,
+      error: null,
+      loadScanDirectories,
+      addScanDirectory,
+      removeScanDirectory,
+      toggleScanDirectory,
+      addCustomAgent,
+      updateCustomAgent,
+      removeCustomAgent,
+      clearError: vi.fn(),
+    })
+  );
+
+  vi.mocked(usePlatformStore).mockImplementation((selector) =>
+    selector({
+      agents,
+      skillsByAgent: {},
+      isLoading: false,
+      error: null,
+      initialize: vi.fn(),
+      rescan,
+    })
+  );
+}
+
+function renderSettingsView() {
+  return render(
+    <MemoryRouter initialEntries={["/settings"]}>
+      <Routes>
+        <Route path="/settings" element={<SettingsView />} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe("SettingsView", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+
+  it("renders the settings header", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByRole("heading", { name: "设置" })).toBeTruthy();
+  });
+
+  it("renders all three sections", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("扫描目录")).toBeTruthy();
+    expect(screen.getByText("自定义平台")).toBeTruthy();
+    expect(screen.getByText("关于")).toBeTruthy();
+  });
+
+  it("calls loadScanDirectories on mount", () => {
+    const loadScanDirectories = vi.fn();
+    setupMocks({ loadScanDirectories });
+    renderSettingsView();
+    expect(loadScanDirectories).toHaveBeenCalled();
+  });
+
+  // ── Scan Directories section ──────────────────────────────────────────────
+
+  it("shows loading state for scan directories", () => {
+    setupMocks({ isLoadingScanDirs: true });
+    renderSettingsView();
+    expect(screen.getByText("加载中...")).toBeTruthy();
+  });
+
+  it("shows empty state when no scan directories", () => {
+    setupMocks({ scanDirs: [] });
+    renderSettingsView();
+    expect(screen.getByText("暂无扫描目录")).toBeTruthy();
+  });
+
+  it("renders builtin scan directory with 内置目录 label", () => {
+    setupMocks({ scanDirs: [mockBuiltinDir] });
+    renderSettingsView();
+    expect(screen.getByText("~/.agents/skills/")).toBeTruthy();
+    expect(screen.getByText("内置目录")).toBeTruthy();
+  });
+
+  it("does not show remove button for builtin directories", () => {
+    setupMocks({ scanDirs: [mockBuiltinDir] });
+    renderSettingsView();
+    // No delete button should be present for builtin dir
+    expect(
+      screen.queryByRole("button", { name: /删除目录 ~\/.agents\/skills\// })
+    ).toBeNull();
+  });
+
+  it("shows remove button for custom directories", () => {
+    setupMocks({ scanDirs: [mockCustomDir] });
+    renderSettingsView();
+    expect(
+      screen.getByRole("button", { name: `删除目录 ${mockCustomDir.path}` })
+    ).toBeTruthy();
+  });
+
+  it("shows toggle for custom directories", () => {
+    setupMocks({ scanDirs: [mockCustomDir] });
+    renderSettingsView();
+    expect(screen.getByRole("switch")).toBeTruthy();
+  });
+
+  it("does not show toggle for builtin directories", () => {
+    setupMocks({ scanDirs: [mockBuiltinDir] });
+    renderSettingsView();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("shows 启用 label when directory is active", () => {
+    setupMocks({ scanDirs: [{ ...mockCustomDir, is_active: true }] });
+    renderSettingsView();
+    expect(screen.getByText("启用")).toBeTruthy();
+  });
+
+  it("shows 禁用 label when directory is inactive", () => {
+    setupMocks({ scanDirs: [{ ...mockCustomDir, is_active: false }] });
+    renderSettingsView();
+    expect(screen.getByText("禁用")).toBeTruthy();
+  });
+
+  it("shows add directory button", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByRole("button", { name: "添加项目目录" })).toBeTruthy();
+  });
+
+  it("opens add directory dialog when button is clicked", async () => {
+    setupMocks();
+    renderSettingsView();
+    fireEvent.click(screen.getByRole("button", { name: "添加项目目录" }));
+    await waitFor(() => {
+      expect(screen.getByText("添加项目目录")).toBeTruthy();
+    });
+  });
+
+  it("removes a custom directory when × button is clicked", async () => {
+    const removeScanDirectory = vi.fn().mockResolvedValue(undefined);
+    const rescan = vi.fn().mockResolvedValue(undefined);
+    setupMocks({
+      scanDirs: [mockCustomDir],
+      removeScanDirectory,
+      rescan,
+    });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除目录 ${mockCustomDir.path}` })
+    );
+
+    await waitFor(() => {
+      expect(removeScanDirectory).toHaveBeenCalledWith(mockCustomDir.path);
+    });
+  });
+
+  it("triggers rescan after removing a directory", async () => {
+    const removeScanDirectory = vi.fn().mockResolvedValue(undefined);
+    const rescan = vi.fn().mockResolvedValue(undefined);
+    setupMocks({ scanDirs: [mockCustomDir], removeScanDirectory, rescan });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除目录 ${mockCustomDir.path}` })
+    );
+
+    await waitFor(() => {
+      expect(rescan).toHaveBeenCalled();
+    });
+  });
+
+  // ── Custom Platforms section ──────────────────────────────────────────────
+
+  it("shows empty state when no custom platforms", () => {
+    setupMocks({ agents: [mockBuiltinAgent] }); // only builtin agents
+    renderSettingsView();
+    expect(screen.getByText("暂无自定义平台。点击「添加平台」注册新平台。")).toBeTruthy();
+  });
+
+  it("renders custom platform with name and path", () => {
+    setupMocks({ agents: [mockBuiltinAgent, mockCustomAgent] });
+    renderSettingsView();
+    expect(screen.getByText("QClaw")).toBeTruthy();
+    expect(screen.getByText("~/.qclaw/skills/")).toBeTruthy();
+  });
+
+  it("shows edit button for custom platforms", () => {
+    setupMocks({ agents: [mockBuiltinAgent, mockCustomAgent] });
+    renderSettingsView();
+    expect(
+      screen.getByRole("button", { name: `编辑平台 ${mockCustomAgent.display_name}` })
+    ).toBeTruthy();
+  });
+
+  it("shows remove button for custom platforms", () => {
+    setupMocks({ agents: [mockBuiltinAgent, mockCustomAgent] });
+    renderSettingsView();
+    expect(
+      screen.getByRole("button", { name: `删除平台 ${mockCustomAgent.display_name}` })
+    ).toBeTruthy();
+  });
+
+  it("does not show builtin agents in custom platforms list", () => {
+    setupMocks({ agents: [mockBuiltinAgent] });
+    renderSettingsView();
+    // builtin agent should not appear in custom platforms section
+    expect(
+      screen.queryByRole("button", { name: `编辑平台 ${mockBuiltinAgent.display_name}` })
+    ).toBeNull();
+  });
+
+  it("shows add platform button", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByRole("button", { name: "添加自定义平台" })).toBeTruthy();
+  });
+
+  it("opens add platform dialog when button is clicked", async () => {
+    setupMocks();
+    renderSettingsView();
+    fireEvent.click(screen.getByRole("button", { name: "添加自定义平台" }));
+    await waitFor(() => {
+      expect(screen.getByText("添加自定义平台")).toBeTruthy();
+    });
+  });
+
+  it("opens edit platform dialog when edit button is clicked", async () => {
+    setupMocks({ agents: [mockBuiltinAgent, mockCustomAgent] });
+    renderSettingsView();
+    fireEvent.click(
+      screen.getByRole("button", { name: `编辑平台 ${mockCustomAgent.display_name}` })
+    );
+    await waitFor(() => {
+      expect(screen.getByText("编辑自定义平台")).toBeTruthy();
+    });
+  });
+
+  it("removes a custom platform when × button is clicked", async () => {
+    const removeCustomAgent = vi.fn().mockResolvedValue(undefined);
+    const rescan = vi.fn().mockResolvedValue(undefined);
+    setupMocks({
+      agents: [mockBuiltinAgent, mockCustomAgent],
+      removeCustomAgent,
+      rescan,
+    });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除平台 ${mockCustomAgent.display_name}` })
+    );
+
+    await waitFor(() => {
+      expect(removeCustomAgent).toHaveBeenCalledWith(mockCustomAgent.id);
+    });
+  });
+
+  it("triggers rescan after removing a platform", async () => {
+    const removeCustomAgent = vi.fn().mockResolvedValue(undefined);
+    const rescan = vi.fn().mockResolvedValue(undefined);
+    setupMocks({
+      agents: [mockBuiltinAgent, mockCustomAgent],
+      removeCustomAgent,
+      rescan,
+    });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除平台 ${mockCustomAgent.display_name}` })
+    );
+
+    await waitFor(() => {
+      expect(rescan).toHaveBeenCalled();
+    });
+  });
+
+  // ── About section ─────────────────────────────────────────────────────────
+
+  it("shows the app version in the about section", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("skills-manage v0.1.0")).toBeTruthy();
+  });
+
+  it("shows the database path in the about section", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("~/.skillsmanage/db.sqlite")).toBeTruthy();
+  });
+
+  it("shows version label", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("应用版本")).toBeTruthy();
+  });
+
+  it("shows database path label", () => {
+    setupMocks();
+    renderSettingsView();
+    expect(screen.getByText("数据库路径")).toBeTruthy();
+  });
+});
