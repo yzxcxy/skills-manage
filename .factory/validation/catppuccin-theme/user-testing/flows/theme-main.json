@@ -1,0 +1,190 @@
+{
+  "groupId": "theme-main",
+  "testedAt": "2026-04-12T15:16:46Z",
+  "isolation": {
+    "appUrl": "http://localhost:24202/settings",
+    "home": "/tmp/skills-manage-test-fixtures/catppuccin-theme-home",
+    "startupLog": "n/a",
+    "evidenceDir": "evidence/catppuccin-theme/theme-main"
+  },
+  "toolsUsed": [
+    "agent-browser",
+    "ApplicationServices AXUIElement",
+    "PyObjC Quartz/ApplicationServices helper",
+    "macOS screencapture",
+    "Execute"
+  ],
+  "assertions": [
+    {
+      "id": "VAL-THEME-001",
+      "title": "Catppuccin Mocha flavor renders correctly",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Opened the isolated Settings page in agent-browser, selected Mocha, captured the browser screenshot, and dumped the computed theme colors from the live DOM.",
+          "expected": "Mocha should render a dark Catppuccin palette with a deep base, light text, green primary accent, and darker sidebar/card surfaces.",
+          "observed": "The Mocha capture showed the dark theme immediately, and `mocha-state.json` recorded body/background `#1e1f25`, foreground `#d3d7e2`, sidebar/card surface `#1a1a20`, primary `#c1d9bf`, and an active Mocha button with the Catppuccin green dot `#a6e3a1`, matching the expected Mocha hierarchy after oklch → sRGB conversion."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-mocha.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/mocha-state.json; evidence/catppuccin-theme/theme-main/browser-console.txt"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-002",
+      "title": "Catppuccin Latte flavor renders correctly",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Switched the same isolated Settings page to Latte, then captured a screenshot and a second computed-style dump.",
+          "expected": "Latte should render the light Catppuccin palette with a pale background, dark foreground text, and the Latte green accent.",
+          "observed": "The Latte capture flipped the full page to the light theme, and `latte-state.json` recorded body/background `#f0f2f5`, foreground `#50525c`, sidebar/card surface `#e6e8eb`, primary `#72946b`, and an active Latte button whose dot remained `#40a02b`, matching the expected light-mode Catppuccin Latte rendering."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-latte.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/latte-state.json; evidence/catppuccin-theme/theme-main/browser-console.txt"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-003",
+      "title": "Catppuccin Macchiato flavor renders correctly",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Selected Macchiato in Settings, then captured both the rendered UI and the computed CSS variable values.",
+          "expected": "Macchiato should render the medium-contrast dark palette with a darker slate base, light text, and Macchiato green accents.",
+          "observed": "The Macchiato evidence showed the medium-dark palette, and `macchiato-state.json` recorded body/background `#272831`, foreground `#d0d4e2`, sidebar/card surface `#202127`, primary `#bacfb3`, and an active Macchiato button with dot `#a6da95`, confirming the implemented Macchiato theme colors."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-macchiato.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/macchiato-state.json; evidence/catppuccin-theme/theme-main/browser-console.txt"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-004",
+      "title": "Catppuccin Frappé flavor renders correctly",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Selected Frappé in Settings and captured another screenshot plus computed-style dump for the live page.",
+          "expected": "Frappé should render the muted dark Catppuccin palette with subdued slate backgrounds, light text, and the Frappé green accent.",
+          "observed": "The Frappé capture showed the muted dark palette, and `frappe-state.json` recorded body/background `#33353c`, foreground `#ccd0df`, sidebar/card surface `#2c2d34`, primary `#b6c8ab`, and an active Frappé button with dot `#a6d189`, matching the expected Frappé flavor rendering."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-frappe.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/frappe-state.json; evidence/catppuccin-theme/theme-main/browser-console.txt"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-005",
+      "title": "Flavor persists across reloads",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Left Macchiato selected, captured the page state, reloaded the Settings route, and captured the state again after the reload completed.",
+          "expected": "After a real reload, the same previously selected flavor should still be active.",
+          "observed": "Before and after reload, the page stayed on Macchiato: both screenshots matched, both JSON dumps kept `theme` and `localStorageFlavor` at `macchiato`, the Macchiato button remained `ariaPressed: true`, the colors stayed `#272831` / `#d0d4e2` / `#bacfb3`, and `macchiato-after-reload.json` showed a `navigationEntries[0].type` of `reload`, proving persistence survived an actual page reload."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-macchiato-before-reload.png",
+          "evidence/catppuccin-theme/theme-main/settings-macchiato-after-reload.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/macchiato-before-reload.json; evidence/catppuccin-theme/theme-main/macchiato-after-reload.json"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-006",
+      "title": "Flavor switcher in Settings",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Inspected the flavor switcher row in Settings and clicked Mocha, Macchiato, Frappé, and Latte sequentially with short waits for repaint.",
+          "expected": "Settings should expose exactly four flavor options, and each click should immediately change the color scheme without triggering a page reload.",
+          "observed": "The annotated Settings screenshot showed all four buttons (`Mocha`, `Macchiato`, `Frappé`, `Latte`), each flavor-specific state dump showed exactly one button with `ariaPressed: true`, and every pre-reload state file still contained only the initial `navigate` entry in `navigationEntries`, confirming the color changes happened immediately without navigation or reload."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/settings-initial-annotated.png",
+          "evidence/catppuccin-theme/theme-main/settings-mocha.png",
+          "evidence/catppuccin-theme/theme-main/settings-macchiato.png",
+          "evidence/catppuccin-theme/theme-main/settings-frappe.png",
+          "evidence/catppuccin-theme/theme-main/settings-latte.png"
+        ],
+        "consoleErrors": "evidence/catppuccin-theme/theme-main/browser-errors.txt (empty)",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/mocha-state.json; evidence/catppuccin-theme/theme-main/macchiato-state.json; evidence/catppuccin-theme/theme-main/frappe-state.json; evidence/catppuccin-theme/theme-main/latte-state.json"
+      },
+      "issues": ""
+    },
+    {
+      "id": "VAL-THEME-007",
+      "title": "Platform icons remain visible across all flavors",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Because the plain browser surface did not expose Tauri-backed platform data, switched to the native `skills-manage` window, navigated to Settings through the AX tree, toggled each flavor with AX checkboxes, and captured native screenshots for all four flavors.",
+          "expected": "Platform SVG icons should remain clearly visible and theme-appropriate across all four Catppuccin flavors.",
+          "observed": "The native Mocha, Macchiato, Frappé, and Latte captures all showed the populated sidebar with visible platform-specific icons next to entries such as AutoClaw/WorkBuddy, Claude Code, Codex CLI, Cursor, EasyClaw, Factory Droid, Gemini CLI, OpenClaw, QClaw, and Trae; the icons remained legible on both dark and light backgrounds and tracked the surrounding monochrome foreground styling in every flavor."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "evidence/catppuccin-theme/theme-main/native-mocha.png",
+          "evidence/catppuccin-theme/theme-main/native-macchiato.png",
+          "evidence/catppuccin-theme/theme-main/native-frappe.png",
+          "evidence/catppuccin-theme/theme-main/native-latte.png"
+        ],
+        "consoleErrors": "n/a for native-window validation",
+        "network": "n/a",
+        "log": "evidence/catppuccin-theme/theme-main/native-settings-after-ax.png; evidence/catppuccin-theme/theme-main/native-initial-window.png"
+      },
+      "issues": ""
+    }
+  ],
+  "frictions": [
+    {
+      "description": "Delegating the run to a `user-testing-flow-validator` subagent failed immediately with an insufficient-permission error in this worker session.",
+      "resolution": "Completed the milestone manually inside the worker using direct browser and native macOS automation."
+    },
+    {
+      "description": "Opening the dev URL in a regular browser did not expose Tauri-backed platform state, so sidebar platform icons were missing from the browser surface.",
+      "resolution": "Used agent-browser for palette and persistence assertions, then validated icon visibility in the native Tauri window."
+    },
+    {
+      "description": "The native Tauri window stayed non-frontmost during the run.",
+      "resolution": "Continued through the exposed AX tree anyway and successfully drove Settings navigation plus flavor checkbox presses before capturing evidence with `screencapture`."
+    }
+  ],
+  "blockers": [],
+  "summary": "Validated all 7 catppuccin-theme assertions against an isolated Tauri instance on port 24202. Browser evidence confirmed the four Catppuccin palettes, instant switching, and reload persistence, while native macOS captures confirmed that platform icons remained visible across Mocha, Macchiato, Frappé, and Latte."
+}
