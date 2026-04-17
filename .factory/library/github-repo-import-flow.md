@@ -64,3 +64,10 @@ Actual preview/import assertions must be exercised on a real Tauri runtime. The 
 - Arbitrary nested repo traversal beyond root + top-level `skills/`
 - Direct repo-to-platform installation that bypasses canonical central import
 - Background auto-import / auto-install without explicit user confirmation
+
+## GitHub API Denial Guidance
+
+- Unauthenticated GitHub REST requests are subject to a low core rate limit and can return `403 Forbidden` with `API rate limit exceeded` even for public repos.
+- Preview/import denial states must surface actionable guidance (rate limit / permission / auth) instead of only echoing a raw HTTP status.
+- This follow-up does **not** add GitHub PAT/settings support; keep the scope to clear feedback and safe no-write handling unless the user explicitly expands the mission.
+

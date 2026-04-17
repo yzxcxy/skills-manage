@@ -51,6 +51,8 @@
 
 ## Milestone 8 GitHub Import Validation Inputs
 
+- If live GitHub preview/import returns a GitHub API denial (`401` / `403` / `429`), capture the exact user-facing message and verify it explains the likely rate-limit or permission/auth cause instead of only echoing a raw HTTP status.
+- When validating denial handling, confirm canonical skill storage remains unchanged after the failed preview/import attempt.
 - Public network access to GitHub endpoints used by the backend preview/import path must be available during validation.
 - **Single-skill repo:** `https://github.com/dorukardahan/twitterapi-io-skill`
 - **Default multi-skill repo:** `https://github.com/anthropics/skills`
