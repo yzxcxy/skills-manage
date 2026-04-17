@@ -182,6 +182,8 @@ export interface SkillDetailViewProps {
   onRequestClose?: () => void;
   /** Optional: exposes the left-preview scroll container to the outer shell. */
   scrollContainerRef?: Ref<HTMLDivElement>;
+  /** Optional id applied to the ViewHeader h1 for shell-level aria-labelledby. */
+  titleId?: string;
 }
 
 export function SkillDetailView({
@@ -190,6 +192,7 @@ export function SkillDetailView({
   leading = null,
   onRequestClose: _onRequestClose,
   scrollContainerRef,
+  titleId,
 }: SkillDetailViewProps) {
   const { t, i18n } = useTranslation();
 
@@ -303,7 +306,7 @@ export function SkillDetailView({
       <div className="border-b border-border px-6 py-3 flex items-center gap-3 shrink-0">
         {leading}
         <div className="min-w-0 flex-1">
-          <h1 className="text-lg font-semibold truncate">
+          <h1 id={titleId} className="text-lg font-semibold truncate">
             {isLoading ? (skillId ?? "") : (detail?.name ?? skillId ?? "")}
           </h1>
           {detail?.description && (
@@ -357,7 +360,10 @@ export function SkillDetailView({
 
         {/* ── TwoColumnLayout: LeftPreview + RightSidebar ────────────────── */}
         {!isLoading && !error && detail && (
-          <div className="flex h-full">
+          <div
+            className="flex h-full flex-col md:flex-row"
+            data-testid="skill-detail-two-column-layout"
+          >
             {/* ── Left: SKILL.md Preview ─────────────────────────────── */}
             <div
               ref={scrollContainerRef}
@@ -492,7 +498,10 @@ export function SkillDetailView({
             </div>
 
             {/* ── Right: Sidebar ─────────────────────────────────────── */}
-            <aside className="w-64 shrink-0 border-l border-border overflow-y-auto p-4 space-y-5">
+            <aside
+              data-testid="skill-detail-right-sidebar"
+              className="w-full shrink-0 border-t border-border overflow-y-auto p-4 space-y-5 md:w-64 md:border-t-0 md:border-l"
+            >
               {/* Metadata */}
               <section aria-label={t("detail.metadataRegion")}>
                 <SectionLabel>{t("detail.metadata")}</SectionLabel>
