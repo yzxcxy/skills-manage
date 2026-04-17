@@ -9,6 +9,9 @@ import {
   ChevronLeft,
   Folder,
   FileText,
+  AlertCircle,
+  Clock3,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -33,6 +36,99 @@ import { SkillPreviewDialog } from "@/components/marketplace/SkillPreviewDialog"
 import { cn } from "@/lib/utils";
 
 type TabId = "recommended" | "official" | "my-sources";
+
+type DuplicateRegistryDetails = {
+  id: string;
+  name: string;
+  url: string;
+  isBuiltin: boolean;
+};
+
+function parseDuplicateRegistryError(error: unknown): DuplicateRegistryDetails | null {
+  const message = String(error);
+  if (!message.startsWith("Error: DUPLICATE_REGISTRY:") && !message.startsWith("DUPLICATE_REGISTRY:")) {
+    return null;
+  }
+
+  const payload = message.replace(/^Error:\s*/, "").replace("DUPLICATE_REGISTRY:", "");
+  try {
+    return JSON.parse(payload) as DuplicateRegistryDetails;
+  } catch {
+    return null;
+  }
+}
+
+function formatRelativeTime(value: string | null | undefined, lang: string) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const diffMs = parsed.getTime() - Date.now();
+  const rtf = new Intl.RelativeTimeFormat(lang === "zh" ? "zh-CN" : "en", {
+    numeric: "auto",
+  });
+
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["day", 1000 * 60 * 60 * 24],
+    ["hour", 1000 * 60 * 60],
+    ["minute", 1000 * 60],
+  ];
+
+  for (const [unit, unitMs] of units) {
+    if (Math.abs(diffMs) >= unitMs || unit === "minute") {
+      return rtf.format(Math.round(diffMs / unitMs), unit);
+    }
+  }
+
+  return null;
+}
+
+function formatTimestamp(value: string | null | undefined, lang: string) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
+}
+
+function getRegistryStatusCopy(registry: SkillRegistry | null, lang: string) {
+  if (!registry) return null;
+
+  const status = registry.last_sync_status ?? "never";
+  if (status === "error") {
+    return {
+      tone: "error" as const,
+      label: lang === "zh" ? "刷新失败，正在显示缓存" : "Refresh failed, showing cached data",
+      detail:
+        registry.last_sync_error ??
+        (lang === "zh" ? "可以稍后再次尝试强制刷新。" : "You can retry with force refresh."),
+    };
+  }
+
+  if (registry.cache_updated_at || registry.last_synced) {
+    const relative = formatRelativeTime(registry.cache_updated_at ?? registry.last_synced, lang);
+    return {
+      tone: "default" as const,
+      label:
+        lang === "zh"
+          ? `缓存可用${relative ? ` · ${relative}` : ""}`
+          : `Cached${relative ? ` · ${relative}` : ""}`,
+      detail:
+        registry.cache_updated_at || registry.last_synced
+          ? formatTimestamp(registry.cache_updated_at ?? registry.last_synced, lang)
+          : null,
+    };
+  }
+
+  return {
+    tone: "default" as const,
+    label: lang === "zh" ? "尚未同步" : "Not synced yet",
+    detail: lang === "zh" ? "首次浏览时会拉取并缓存技能列表。" : "The first browse will fetch and cache the skill list.",
+  };
+}
 
 // ─── Registry Chip ───────────────────────────────────────────────────────────
 
@@ -107,6 +203,9 @@ export function MarketplaceView() {
   const syncRegistry = useMarketplaceStore((s) => s.syncRegistry);
   const installSkill = useMarketplaceStore((s) => s.installSkill);
   const addRegistry = useMarketplaceStore((s) => s.addRegistry);
+  const removeRegistry = useMarketplaceStore((s) => s.removeRegistry);
+  const findDuplicateRegistry = useMarketplaceStore((s) => s.findDuplicateRegistry);
+  const marketplaceError = useMarketplaceStore((s) => s.error);
 
   const rescan = usePlatformStore((s) => s.rescan);
 
@@ -118,6 +217,7 @@ export function MarketplaceView() {
   const [publisherSearch, setPublisherSearch] = useState("");
   const [recommendedInstallingIds, setRecommendedInstallingIds] = useState<Set<string>>(new Set());
   const [addingRepos, setAddingRepos] = useState<Set<string>>(new Set());
+  const [removingRegistryIds, setRemovingRegistryIds] = useState<Set<string>>(new Set());
 
   // Preview state — inline skills preview in Official Directory
   interface PreviewSkill { name: string; description?: string; downloadUrl: string }
@@ -140,6 +240,11 @@ export function MarketplaceView() {
   const selectedRegistryObj = useMemo(
     () => registries.find((r) => r.id === selectedRegistryId) ?? null,
     [registries, selectedRegistryId]
+  );
+
+  const selectedRegistryStatus = useMemo(
+    () => getRegistryStatusCopy(selectedRegistryObj, lang),
+    [selectedRegistryObj, lang]
   );
 
   // Recommended skills filtered by tag and search
@@ -168,6 +273,23 @@ export function MarketplaceView() {
   const addedRepoUrls = useMemo(() => {
     return new Set(registries.map((r) => r.url));
   }, [registries]);
+
+  const mySourceRows = useMemo(
+    () =>
+      registries.map((registry) => {
+        const duplicateOfficial = OFFICIAL_PUBLISHERS.some((publisher) =>
+          publisher.repos.some(
+            (repo) => findDuplicateRegistry(repo.url)?.id === registry.id && repo.url !== registry.url
+          )
+        );
+
+        return {
+          registry,
+          duplicateOfficial,
+        };
+      }),
+    [findDuplicateRegistry, registries]
+  );
 
   // ── Handlers ───────────────────────────────────────────────────────────
 
@@ -213,10 +335,17 @@ export function MarketplaceView() {
     }
   }
 
-  async function handleSync() {
+  async function handleSync(forceRefresh = false) {
     if (!selectedRegistryId) return;
     try {
-      await syncRegistry(selectedRegistryId);
+      await syncRegistry(selectedRegistryId, forceRefresh);
+      if (forceRefresh) {
+        toast.success(
+          lang === "zh"
+            ? "已更新缓存内容"
+            : "Marketplace cache updated"
+        );
+      }
     } catch (err) {
       toast.error(String(err));
     }
@@ -322,11 +451,40 @@ export function MarketplaceView() {
       await addRegistry(name, "github", url);
       toast.success(lang === "zh" ? `已添加 ${repoFullName}` : `Added ${repoFullName}`);
     } catch (err) {
-      toast.error(String(err));
+      const duplicate = parseDuplicateRegistryError(err);
+      if (duplicate) {
+        toast.error(
+          duplicate.isBuiltin
+            ? lang === "zh"
+              ? `该仓库已存在于官方源目录：${duplicate.name}`
+              : `This repo already exists in Official Directory: ${duplicate.name}`
+            : lang === "zh"
+              ? `该源已存在：${duplicate.name}`
+              : `This source already exists: ${duplicate.name}`
+        );
+      } else {
+        toast.error(String(err));
+      }
     } finally {
       setAddingRepos((prev) => {
         const next = new Set(prev);
         next.delete(repoFullName);
+        return next;
+      });
+    }
+  }
+
+  async function handleDeleteRegistry(registryId: string) {
+    setRemovingRegistryIds((prev) => new Set(prev).add(registryId));
+    try {
+      await removeRegistry(registryId);
+      toast.success(lang === "zh" ? "已删除该源" : "Source deleted");
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setRemovingRegistryIds((prev) => {
+        const next = new Set(prev);
+        next.delete(registryId);
         return next;
       });
     }
@@ -415,20 +573,24 @@ export function MarketplaceView() {
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
-                {filteredRecommended.map((skill) => (
-                  <UnifiedSkillCard
-                    key={skill.name}
-                    name={skill.name}
-                    description={skill.description}
-                    publisher={skill.publisher}
-                    tags={skill.tags.slice(0, 2).map((tag) => ({
-                      key: tag,
-                      label: lang === "zh" ? TAG_LABELS[tag].zh : TAG_LABELS[tag].en,
-                    }))}
-                    onInstall={() => handleInstallRecommended(skill)}
-                    isLoading={recommendedInstallingIds.has(skill.name)}
-                  />
-                ))}
+                {filteredRecommended.map((skill) => {
+                  const downloadUrl = `https://raw.githubusercontent.com/${skill.repoFullName}/main/${skill.name}/SKILL.md`;
+                  return (
+                    <UnifiedSkillCard
+                      key={skill.name}
+                      name={skill.name}
+                      description={skill.description}
+                      publisher={skill.publisher}
+                      tags={skill.tags.slice(0, 2).map((tag) => ({
+                        key: tag,
+                        label: lang === "zh" ? TAG_LABELS[tag].zh : TAG_LABELS[tag].en,
+                      }))}
+                      onDetail={() => setDetailSkill({ name: skill.name, downloadUrl, publisher: skill.publisher })}
+                      onInstall={() => handleInstallRecommended(skill)}
+                      isLoading={recommendedInstallingIds.has(skill.name)}
+                    />
+                  );
+                })}
               </div>
             )}
           </div>
@@ -636,6 +798,77 @@ export function MarketplaceView() {
 
             {selectedRegistryObj && (
               <div className="flex flex-col flex-1 min-h-0">
+                <div className="px-6 pt-4">
+                  <div className="rounded-lg border border-border/70 bg-card/70 p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold">
+                          {lang === "zh" ? "我的源" : "My Sources"}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          {lang === "zh"
+                            ? "源信息会持久化保存，并在重新打开应用时继续复用缓存元数据。"
+                            : "Source identity and sync metadata persist and are reused when you reopen the app."}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {registries.length} {lang === "zh" ? "个源" : "sources"}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {mySourceRows.map(({ registry, duplicateOfficial }) => (
+                        <div
+                          key={registry.id}
+                          className="flex items-start gap-3 rounded-md border border-border/70 bg-background/70 px-3 py-2"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">{registry.name}</span>
+                              {registry.is_builtin ? (
+                                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                  {lang === "zh" ? "官方" : "Official"}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">{registry.url}</div>
+                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                              <span>
+                                {lang === "zh" ? "缓存更新：" : "Cache updated:"}{" "}
+                                {formatTimestamp(registry.cache_updated_at ?? registry.last_synced, lang) ??
+                                  (lang === "zh" ? "尚未同步" : "Not synced")}
+                              </span>
+                              <span>
+                                {lang === "zh" ? "最后尝试：" : "Last attempted:"}{" "}
+                                {formatTimestamp(registry.last_attempted_sync, lang) ??
+                                  (lang === "zh" ? "暂无" : "None")}
+                              </span>
+                            </div>
+                            {duplicateOfficial ? (
+                              <div className="mt-2 text-[11px] text-amber-600">
+                                {lang === "zh"
+                                  ? "该源与官方目录中的仓库身份重复，已按规范化仓库地址去重。"
+                                  : "This source overlaps with an Official Directory repo and is deduplicated by normalized repo identity."}
+                              </div>
+                            ) : null}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteRegistry(registry.id)}
+                            disabled={registry.is_builtin || removingRegistryIds.has(registry.id)}
+                            className="h-8 shrink-0 text-destructive hover:text-destructive"
+                          >
+                            {removingRegistryIds.has(registry.id) ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : null}
+                            <span>{t("common.delete")}</span>
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
                 {/* Source header */}
                 <div className="flex items-center gap-3 px-6 py-3 border-b border-border">
                   <div className="min-w-0 flex-1">
@@ -656,14 +889,64 @@ export function MarketplaceView() {
                       className="pl-7 h-7 text-xs bg-muted/40"
                     />
                   </div>
-                  <Button variant="outline" size="sm" onClick={handleSync} disabled={isSyncing}>
+                  <Button variant="outline" size="sm" onClick={() => handleSync()} disabled={isSyncing}>
                     {isSyncing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                    <span>{t("marketplace.sync")}</span>
+                    <span>{lang === "zh" ? "使用缓存更新" : "Update"}</span>
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handleSync(true)} disabled={isSyncing}>
+                    {isSyncing ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldAlert className="size-3.5" />}
+                    <span>{lang === "zh" ? "强制刷新" : "Force Refresh"}</span>
                   </Button>
                 </div>
 
                 {/* Skills */}
                 <div className="flex-1 overflow-auto p-6">
+                  <div className="mb-4 rounded-lg border border-border/70 bg-muted/20 p-3">
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={cn(
+                          "mt-0.5 rounded-full p-1.5",
+                          selectedRegistryStatus?.tone === "error"
+                            ? "bg-destructive/10 text-destructive"
+                            : "bg-primary/10 text-primary"
+                        )}
+                      >
+                        {selectedRegistryStatus?.tone === "error" ? (
+                          <AlertCircle className="size-3.5" />
+                        ) : (
+                          <Clock3 className="size-3.5" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium">
+                          {selectedRegistryStatus?.label ??
+                            (lang === "zh" ? "缓存状态未知" : "Cache status unavailable")}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {selectedRegistryStatus?.detail ??
+                            (lang === "zh"
+                              ? "重新打开该源时会优先显示后端缓存。"
+                              : "Reopening this source reuses backend cache by default.")}
+                        </div>
+                        {selectedRegistryObj?.last_attempted_sync && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {lang === "zh" ? "最近尝试：" : "Last attempted:"}{" "}
+                            {formatTimestamp(selectedRegistryObj.last_attempted_sync, lang)}
+                          </div>
+                        )}
+                        {selectedRegistryObj?.cache_expires_at && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {lang === "zh" ? "缓存有效期至：" : "Cache valid until:"}{" "}
+                            {formatTimestamp(selectedRegistryObj.cache_expires_at, lang)}
+                          </div>
+                        )}
+                        {marketplaceError && selectedRegistryStatus?.tone !== "error" && (
+                          <div className="mt-1 text-[11px] text-destructive">{marketplaceError}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   {isLoading || isSyncing ? (
                     <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
                       <Loader2 className="size-5 animate-spin" />
@@ -676,7 +959,7 @@ export function MarketplaceView() {
                       </div>
                       <p className="text-sm text-muted-foreground font-medium">{t("marketplace.noSkills")}</p>
                       <p className="text-xs text-muted-foreground">{t("marketplace.noSkillsDesc")}</p>
-                      <Button variant="default" size="sm" onClick={handleSync}>
+                      <Button variant="default" size="sm" onClick={() => handleSync()}>
                         <RefreshCw className="size-3.5" />
                         {t("marketplace.syncNow")}
                       </Button>
@@ -689,6 +972,7 @@ export function MarketplaceView() {
                           name={skill.name}
                           description={skill.description}
                           isInstalled={skill.is_installed}
+                          onDetail={() => setDetailSkill({ name: skill.name, downloadUrl: skill.download_url })}
                           onInstall={() => handleInstallFromSource(skill.id)}
                           isLoading={installingIds.has(skill.id)}
                         />

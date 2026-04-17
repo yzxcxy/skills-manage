@@ -1,0 +1,238 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+
+import { useMarketplaceStore } from "@/stores/marketplaceStore";
+
+const mockInvoke = vi.mocked(invoke);
+
+describe("marketplaceStore", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    useMarketplaceStore.setState({
+      registries: [],
+      skills: [],
+      selectedRegistryId: null,
+      searchQuery: "",
+      isLoading: false,
+      isSyncing: false,
+      installingIds: new Set(),
+      error: null,
+    });
+  });
+
+  it("uses cached sync by default and refreshes registry metadata", async () => {
+    const skills = [
+      {
+        id: "skill-1",
+        registry_id: "reg-1",
+        name: "Skill One",
+        description: "cached",
+        download_url: "https://example.com/skill-1",
+        is_installed: false,
+        synced_at: "2026-04-16T00:00:00Z",
+        cache_updated_at: "2026-04-16T00:00:00Z",
+      },
+    ];
+    const registries = [
+      {
+        id: "reg-1",
+        name: "Repo",
+        source_type: "github",
+        url: "https://github.com/acme/repo",
+        is_builtin: false,
+        is_enabled: true,
+        last_synced: "2026-04-16T00:00:00Z",
+        last_attempted_sync: "2026-04-16T00:00:00Z",
+        last_sync_status: "success",
+        last_sync_error: null,
+        cache_updated_at: "2026-04-16T00:00:00Z",
+        cache_expires_at: null,
+        etag: null,
+        last_modified: null,
+        created_at: "2026-04-15T00:00:00Z",
+      },
+    ];
+
+    mockInvoke
+      .mockResolvedValueOnce(skills)
+      .mockResolvedValueOnce(registries);
+
+    await useMarketplaceStore.getState().syncRegistry("reg-1");
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "sync_registry", { registryId: "reg-1" });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "list_registries");
+    expect(useMarketplaceStore.getState().skills).toEqual(skills);
+    expect(useMarketplaceStore.getState().registries).toEqual(registries);
+    expect(useMarketplaceStore.getState().isSyncing).toBe(false);
+  });
+
+  it("force refreshes via sync_registry_with_options and preserves refreshed metadata", async () => {
+    const freshSkills = [
+      {
+        id: "skill-1",
+        registry_id: "reg-1",
+        name: "Skill One Fresh",
+        description: "fresh",
+        download_url: "https://example.com/skill-1",
+        is_installed: false,
+        synced_at: "2026-04-16T01:00:00Z",
+        cache_updated_at: "2026-04-16T01:00:00Z",
+      },
+    ];
+    const refreshedRegistries = [
+      {
+        id: "reg-1",
+        name: "Repo",
+        source_type: "github",
+        url: "https://github.com/acme/repo",
+        is_builtin: false,
+        is_enabled: true,
+        last_synced: "2026-04-16T01:00:00Z",
+        last_attempted_sync: "2026-04-16T01:00:00Z",
+        last_sync_status: "success",
+        last_sync_error: null,
+        cache_updated_at: "2026-04-16T01:00:00Z",
+        cache_expires_at: null,
+        etag: "\"etag\"",
+        last_modified: null,
+        created_at: "2026-04-15T00:00:00Z",
+      },
+    ];
+
+    mockInvoke
+      .mockResolvedValueOnce(freshSkills)
+      .mockResolvedValueOnce(refreshedRegistries);
+
+    await useMarketplaceStore.getState().syncRegistry("reg-1", true);
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "sync_registry_with_options", {
+      registryId: "reg-1",
+      options: { forceRefresh: true },
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "list_registries");
+    expect(useMarketplaceStore.getState().skills).toEqual(freshSkills);
+    expect(useMarketplaceStore.getState().registries[0]?.last_synced).toBe("2026-04-16T01:00:00Z");
+  });
+
+  it("keeps last successful cached skills visible when force refresh fails", async () => {
+    useMarketplaceStore.setState({
+      skills: [
+        {
+          id: "skill-1",
+          registry_id: "reg-1",
+          name: "Cached Skill",
+          description: "cached",
+          download_url: "https://example.com/skill-1",
+          is_installed: false,
+          synced_at: "2026-04-16T00:00:00Z",
+          cache_updated_at: "2026-04-16T00:00:00Z",
+        },
+      ],
+      registries: [
+        {
+          id: "reg-1",
+          name: "Repo",
+          source_type: "github",
+          url: "https://github.com/acme/repo",
+          is_builtin: false,
+          is_enabled: true,
+          last_synced: "2026-04-16T00:00:00Z",
+          last_attempted_sync: "2026-04-16T00:00:00Z",
+          last_sync_status: "success",
+          last_sync_error: null,
+          cache_updated_at: "2026-04-16T00:00:00Z",
+          cache_expires_at: null,
+          etag: null,
+          last_modified: null,
+          created_at: "2026-04-15T00:00:00Z",
+        },
+      ],
+    });
+
+    mockInvoke
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce([
+        {
+          id: "reg-1",
+          name: "Repo",
+          source_type: "github",
+          url: "https://github.com/acme/repo",
+          is_builtin: false,
+          is_enabled: true,
+          last_synced: "2026-04-16T00:00:00Z",
+          last_attempted_sync: "2026-04-16T02:00:00Z",
+          last_sync_status: "error",
+          last_sync_error: "network down",
+          cache_updated_at: "2026-04-16T00:00:00Z",
+          cache_expires_at: null,
+          etag: null,
+          last_modified: null,
+          created_at: "2026-04-15T00:00:00Z",
+        },
+      ]);
+
+    await expect(useMarketplaceStore.getState().syncRegistry("reg-1", true)).rejects.toThrow(
+      "network down"
+    );
+
+    expect(useMarketplaceStore.getState().skills[0]?.name).toBe("Cached Skill");
+    expect(useMarketplaceStore.getState().registries[0]?.last_sync_status).toBe("error");
+    expect(useMarketplaceStore.getState().error).toContain("network down");
+    expect(useMarketplaceStore.getState().isSyncing).toBe(false);
+  });
+
+  it("normalizes GitHub identities when checking duplicate registries", () => {
+    useMarketplaceStore.setState({
+      registries: [
+        {
+          id: "official-1",
+          name: "Official Repo",
+          source_type: "github",
+          url: "https://github.com/Anthropics/Skills",
+          normalized_url: "github:anthropics/skills",
+          is_builtin: true,
+          is_enabled: true,
+          last_synced: null,
+          created_at: "2026-04-15T00:00:00Z",
+        },
+      ],
+    });
+
+    const duplicate = useMarketplaceStore
+      .getState()
+      .findDuplicateRegistry("https://github.com/anthropics/skills.git/");
+
+    expect(duplicate?.id).toBe("official-1");
+  });
+
+  it("blocks addRegistry when normalized identity already exists", async () => {
+    useMarketplaceStore.setState({
+      registries: [
+        {
+          id: "official-1",
+          name: "Official Repo",
+          source_type: "github",
+          url: "https://github.com/anthropics/skills",
+          normalized_url: "github:anthropics/skills",
+          is_builtin: true,
+          is_enabled: true,
+          last_synced: null,
+          created_at: "2026-04-15T00:00:00Z",
+        },
+      ],
+    });
+
+    await expect(
+      useMarketplaceStore
+        .getState()
+        .addRegistry("Skills", "github", "https://github.com/Anthropics/skills")
+    ).rejects.toThrow("DUPLICATE_REGISTRY:");
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+});

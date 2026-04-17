@@ -15,11 +15,13 @@ interface MarketplaceState {
   loadRegistries: () => Promise<void>;
   selectRegistry: (id: string) => void;
   setSearchQuery: (query: string) => void;
-  syncRegistry: (registryId: string) => Promise<void>;
+  syncRegistry: (registryId: string, forceRefresh?: boolean) => Promise<void>;
   loadSkills: (registryId: string, query?: string) => Promise<void>;
   installSkill: (skillId: string) => Promise<void>;
   addRegistry: (name: string, sourceType: string, url: string) => Promise<SkillRegistry>;
   removeRegistry: (registryId: string) => Promise<void>;
+  getNormalizedRegistryIdentity: (url: string) => string | null;
+  findDuplicateRegistry: (url: string) => SkillRegistry | null;
 }
 
 export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
@@ -31,6 +33,39 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   isSyncing: false,
   installingIds: new Set(),
   error: null,
+
+  getNormalizedRegistryIdentity: (url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+
+    const githubMatch = trimmed.match(
+      /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:\/)?$/i
+    );
+    if (githubMatch) {
+      return `github:${githubMatch[1].toLowerCase()}/${githubMatch[2].toLowerCase()}`;
+    }
+
+    try {
+      const parsed = new URL(trimmed.startsWith("http") ? trimmed : `https://${trimmed}`);
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      return `${parsed.hostname.toLowerCase()}${pathname.toLowerCase()}`;
+    } catch {
+      return trimmed.toLowerCase();
+    }
+  },
+
+  findDuplicateRegistry: (url: string) => {
+    const normalized = get().getNormalizedRegistryIdentity(url);
+    if (!normalized) return null;
+
+    return (
+      get().registries.find((registry) => {
+        const existingIdentity =
+          registry.normalized_url ?? get().getNormalizedRegistryIdentity(registry.url);
+        return existingIdentity === normalized;
+      }) ?? null
+    );
+  },
 
   loadRegistries: async () => {
     set({ isLoading: true, error: null });
@@ -55,13 +90,30 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }
   },
 
-  syncRegistry: async (registryId: string) => {
+  syncRegistry: async (registryId: string, forceRefresh = false) => {
     set({ isSyncing: true, error: null });
     try {
-      const skills = await invoke<MarketplaceSkill[]>("sync_registry", { registryId });
-      set({ skills: skills ?? [], isSyncing: false });
+      const command = forceRefresh ? "sync_registry_with_options" : "sync_registry";
+      const skills = forceRefresh
+        ? await invoke<MarketplaceSkill[]>(command, {
+            registryId,
+            options: { forceRefresh: true },
+          })
+        : await invoke<MarketplaceSkill[]>(command, { registryId });
+      const registries = await invoke<SkillRegistry[]>("list_registries");
+      set({
+        skills: skills ?? [],
+        registries: registries ?? [],
+        isSyncing: false,
+      });
     } catch (err) {
-      set({ error: String(err), isSyncing: false });
+      const registries = await invoke<SkillRegistry[]>("list_registries").catch(() => null);
+      set({
+        error: String(err),
+        registries: registries ?? get().registries,
+        isSyncing: false,
+      });
+      throw err;
     }
   },
 
@@ -104,6 +156,17 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   },
 
   addRegistry: async (name: string, sourceType: string, url: string) => {
+    const duplicate = get().findDuplicateRegistry(url);
+    if (duplicate) {
+      throw new Error(
+        `DUPLICATE_REGISTRY:${JSON.stringify({
+          id: duplicate.id,
+          name: duplicate.name,
+          url: duplicate.url,
+          isBuiltin: duplicate.is_builtin,
+        })}`
+      );
+    }
     const registry = await invoke<SkillRegistry>("add_registry", { name, sourceType, url });
     const registries = await invoke<SkillRegistry[]>("list_registries");
     set({ registries: registries ?? [] });
