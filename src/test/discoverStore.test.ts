@@ -286,7 +286,8 @@ describe("discoverStore", () => {
     expect(useDiscoverStore.getState().discoveredProjects).toEqual([
       expect.objectContaining({
         project_name: "Fixture Project",
-        skills: [expect.objectContaining({ id: "fixture-discover-skill" })],
+        project_path: "/Users/fixture/project",
+        skills: [expect.objectContaining({ id: "fixture-central-skill", is_already_central: true })],
       }),
     ]);
     expect(useDiscoverStore.getState().totalSkillsFound).toBe(1);

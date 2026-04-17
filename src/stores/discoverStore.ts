@@ -13,20 +13,20 @@ import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
 
 const BROWSER_FIXTURE_DISCOVERED_PROJECTS: DiscoveredProject[] = [
   {
-    project_path: "/fixture/project",
+    project_path: "/Users/fixture/project",
     project_name: "Fixture Project",
     skills: [
       {
-        id: "fixture-discover-skill",
-        name: "fixture-discover-skill",
+        id: "fixture-central-skill",
+        name: "fixture-central-skill",
         description: "Browser validation fixture for Discover drawer entry.",
-        file_path: "/fixture/project/.skills/fixture-discover-skill/SKILL.md",
-        dir_path: "/fixture/project/.skills/fixture-discover-skill",
+        file_path: "/Users/fixture/project/.skills/fixture-central-skill/SKILL.md",
+        dir_path: "/Users/fixture/project/.skills/fixture-central-skill",
         platform_id: "claude-code",
         platform_name: "Claude Code",
-        project_path: "/fixture/project",
+        project_path: "/Users/fixture/project",
         project_name: "Fixture Project",
-        is_already_central: false,
+        is_already_central: true,
       },
     ],
   },

@@ -403,6 +403,44 @@ describe("DiscoverView", () => {
     expect(saveScrollSpy).not.toHaveBeenCalled();
   });
 
+  it("renders a visible detail trigger for the browser validation fixture route", async () => {
+    const encoded = encodeURIComponent("/Users/fixture/project");
+
+    mockUseDiscoverStore.mockImplementation((selector) =>
+      selector(
+        buildDiscoverStoreState({
+          discoveredProjects: [
+            {
+              project_path: "/Users/fixture/project",
+              project_name: "Fixture Project",
+              skills: [
+                {
+                  id: "fixture-central-skill",
+                  name: "fixture-central-skill",
+                  description: "Browser validation fixture for Discover drawer entry.",
+                  file_path: "/Users/fixture/project/.skills/fixture-central-skill/SKILL.md",
+                  dir_path: "/Users/fixture/project/.skills/fixture-central-skill",
+                  platform_id: "claude-code",
+                  platform_name: "Claude Code",
+                  project_path: "/Users/fixture/project",
+                  project_name: "Fixture Project",
+                  is_already_central: true,
+                },
+              ],
+            },
+          ],
+          totalSkillsFound: 1,
+        })
+      )
+    );
+
+    renderDiscoverView(`/discover/${encoded}`);
+
+    expect(
+      await screen.findByRole("button", { name: /view details for fixture-central-skill/i })
+    ).toBeInTheDocument();
+  });
+
   it("restores discover project scroll after async hydration completes", async () => {
     let discoverState = buildDiscoverStoreState({
       discoveredProjects: [],
