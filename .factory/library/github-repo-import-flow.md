@@ -48,6 +48,17 @@ Do not expand v1 into arbitrary nested repository traversal.
 - Post-import platform selection should reuse existing install patterns/stores where possible.
 - On browser/Vite surfaces without the Tauri bridge, the wizard must show a friendly desktop-only unsupported state instead of throwing on `invoke()`.
 
+## Approved Preview Layout
+
+- The **Preview** step should use a **near-fullscreen bounded dialog** that stays inside the app viewport instead of growing with the full list content.
+- Keep the **header/stepper/input region fixed** at the top and the **primary actions fixed** at the bottom.
+- Only the **middle preview body** should scroll.
+- The preview body should use a **master/detail split**:
+  - **Left pane:** scrollable summary list of discovered skills (checkbox, name, small metadata, short summary only)
+  - **Right pane:** full detail for the currently selected skill, including long description and any conflict-resolution controls
+- Do **not** render every skill description fully expanded in the list at once.
+- Preserve the same shared Marketplace/Central wizard flow and import semantics; this is a presentation/layout change, not a workflow rewrite.
+
 ## Validation Inputs
 
 - **Single-skill repo:** `https://github.com/dorukardahan/twitterapi-io-skill`
