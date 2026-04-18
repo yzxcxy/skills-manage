@@ -113,3 +113,12 @@ Actual preview/import assertions must be exercised on a real Tauri runtime. The 
 - Never forward the PAT to public mirror/proxy endpoints; mirrors remain unauthenticated-only fallback paths.
 - A valid PAT should help the import flow avoid the low unauthenticated GitHub API quota path for public repositories.
 - Invalid or insufficient PATs must surface actionable auth feedback and preserve no-write preview/import semantics.
+
+
+## Confirm and Result UX Guidance
+
+- The `Confirm` step should be a compact summary/review surface, not a clone of the preview browsing workspace.
+- Show grouped counts and decisions (import, skip, overwrite, rename) so users can sanity-check their choices quickly.
+- Provide an obvious route back to preview for edits before the import is finalized.
+- The `Result` step should act as a completion hub with clear next actions rather than only a passive success message.
+- Keep imported/skipped summaries visible, but prioritize the likely next actions (install imported skills, open Central, continue importing) in the result layout.

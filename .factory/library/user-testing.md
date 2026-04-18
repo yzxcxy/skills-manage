@@ -61,6 +61,7 @@
 - For the adaptive-size follow-up, validate that the initial input step becomes medium-width and content-driven with no large empty body, then validate that the preview step widens only as needed for the split layout and no longer feels like an overgrown near-fullscreen shell.
 - For the mirror-fallback follow-up, validate that a normal github.com URL can recover through the built-in mirror chain when direct GitHub transport access fails on the test network path; if the environment instead returns explicit 401/403/429 denials, confirm the existing GitHub denial guidance still wins and no writes occur.
 - For the authenticated-requests follow-up, a real GitHub PAT will be required for end-to-end validation; once the user provides it, validate that Settings can save/clear the PAT, that a previously rate-limited public repo can preview through authenticated direct GitHub access, and that invalid/insufficient PATs still produce actionable auth feedback with no writes.
+- For the confirm-result redesign follow-up, validate that `Confirm` becomes a distinct grouped review summary with a clear return-to-preview path and that `Result` becomes a clear completion/next-step hub with imported/skipped summaries plus post-import actions.
 - Public network access to GitHub endpoints used by the backend preview/import path must be available during validation.
 - **Single-skill repo:** `https://github.com/dorukardahan/twitterapi-io-skill`
 - **Default multi-skill repo:** `https://github.com/anthropics/skills`
