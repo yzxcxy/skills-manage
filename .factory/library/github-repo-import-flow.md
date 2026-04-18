@@ -53,6 +53,7 @@ Do not expand v1 into arbitrary nested repository traversal.
 - The **Preview** step should use a **near-fullscreen bounded dialog** that stays inside the app viewport instead of growing with the full list content.
 - On desktop, the preview shell should span **most of the app window width** (roughly the user-highlighted red-box target), not a narrow centered modal column.
 - That wide-shell requirement applies from the **initial input step onward**, not only after preview data loads. If the wizard reuses a shared dialog primitive, the default small max-width cap must be truly removed/overridden at the rendered window shell level.
+- The acceptance criterion is the **actual rendered desktop geometry** users see on the real shell. Class-name presence alone is not sufficient evidence if the dialog still looks narrow at runtime.
 - Keep the **header/stepper/input region fixed** at the top and the **primary actions fixed** at the bottom.
 - Only the **middle preview body** should scroll.
 - The preview body should use a **master/detail split**:

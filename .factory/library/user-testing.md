@@ -57,6 +57,7 @@
 - Confirm the preview step uses a left summary list plus right selected-skill detail pane, and that long descriptions are not fully expanded for every item in the list at once.
 - For the width-expansion follow-up, validate on a real desktop/Tauri surface that the preview shell spans most of the app window and gives both panes materially more horizontal room while remaining inside the viewport.
 - For the full-window width-cap follow-up, validate on a real desktop/Tauri surface that the GitHub repo import window is already wide on the initial input step before preview is triggered, and that it no longer inherits a narrow default modal width.
+- For the rendered-width follow-up, validate on the same real desktop/Tauri surface that the user sees and confirm the initial input step and preview step both visibly render as a wide near-fullscreen window; do not treat DOM class presence alone as sufficient evidence if the shell still appears narrow.
 - Public network access to GitHub endpoints used by the backend preview/import path must be available during validation.
 - **Single-skill repo:** `https://github.com/dorukardahan/twitterapi-io-skill`
 - **Default multi-skill repo:** `https://github.com/anthropics/skills`
