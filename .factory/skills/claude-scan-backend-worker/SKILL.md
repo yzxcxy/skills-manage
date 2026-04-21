@@ -30,10 +30,11 @@ None.
    - duplicate logical skills across both roots
    - rescan stale-row cleanup
 4. Implement the backend change with the smallest stable row identity that keeps duplicate Claude rows distinct from list through detail.
-5. If a payload shape changes for frontend consumers, update only the backend contract for this feature; do not make speculative frontend edits.
+5. If a payload shape changes for frontend consumers, update only the backend contract for this feature; do not make speculative frontend edits, but you **must** run the mission frontend-targeted validators to catch caller compatibility breaks.
 6. Run verification commands from `.factory/services.yaml` relevant to your scope:
    - `test-rust-targeted`
    - `clippy`
+   - if any IPC/query payload consumed by the frontend changed: `test-frontend-targeted`, `typecheck`, and `lint`
    - any focused single-test commands needed during iteration
 7. If your change affects live Tauri scan behavior, perform at least one isolated-home sanity check with `HOME=/tmp/skills-manage-test-fixtures/claude-multi-source` and record the observed outcome.
 8. In the handoff, explicitly call out whether marketplace rows remain outside install/centralize/link semantics.
@@ -66,6 +67,11 @@ None.
         "command": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
         "exitCode": 0,
         "observation": "No warnings."
+      },
+      {
+        "command": "pnpm exec vitest run src/test/platformStore.test.ts src/test/PlatformView.test.tsx src/test/SkillDetailView.test.tsx src/test/skillDetailStore.test.ts && pnpm typecheck && pnpm lint",
+        "exitCode": 0,
+        "observation": "Frontend-targeted tests, TypeScript typecheck, and lint all passed after the backend payload change."
       }
     ],
     "interactiveChecks": [
