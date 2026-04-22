@@ -54,6 +54,30 @@ function buildDetailInvokeArgs(request: SkillDetailRequest) {
   };
 }
 
+function resolveDetailRequest(
+  request: SkillDetailRequest,
+  detail: SkillDetail
+): SkillDetailRequest {
+  const resolvedRowId =
+    request.rowId ??
+    (detail.row_id && detail.row_id !== request.skillId ? detail.row_id : undefined);
+
+  return {
+    skillId: request.skillId,
+    ...(request.agentId ? { agentId: request.agentId } : {}),
+    ...(resolvedRowId ? { rowId: resolvedRowId } : {}),
+  };
+}
+
+function setActiveDetailRequestFromDetail(
+  request: SkillDetailRequest,
+  detail: SkillDetail
+): SkillDetailRequest {
+  const resolvedRequest = resolveDetailRequest(request, detail);
+  activeDetailRequest = resolvedRequest;
+  return resolvedRequest;
+}
+
 function getActiveDetailRequest(skillId: string): SkillDetailRequest {
   if (activeDetailRequest?.skillId === skillId) {
     return activeDetailRequest;
@@ -165,8 +189,9 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   explanationErrorInfo: null,
 
   /**
-   * Load skill detail metadata and raw SKILL.md content in parallel.
-   * Calls get_skill_detail and read_skill_content Tauri commands.
+   * Load skill detail metadata, then read raw SKILL.md content from the
+   * resolved detail row's file path so duplicate/source-aware rows keep the
+   * selected content source.
    */
   loadDetail: async (request: SkillDetailRequest | string) => {
     const detailRequest = normalizeDetailRequest(request);
@@ -182,10 +207,14 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       return;
     }
     try {
-      const [detail, content] = await Promise.all([
-        invoke<SkillDetail>("get_skill_detail", buildDetailInvokeArgs(detailRequest)),
-        invoke<string>("read_skill_content", { skillId: detailRequest.skillId }),
-      ]);
+      const detail = await invoke<SkillDetail>(
+        "get_skill_detail",
+        buildDetailInvokeArgs(detailRequest)
+      );
+      setActiveDetailRequestFromDetail(detailRequest, detail);
+      const content = await invoke<string>("read_file_by_path", {
+        path: detail.file_path,
+      });
       set({ detail, content, isLoading: false });
     } catch (err) {
       set({ error: String(err), isLoading: false });
@@ -279,10 +308,12 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
         method: "symlink",
       });
       // Reload detail so the installations list reflects the new install.
+      const detailRequest = getActiveDetailRequest(skillId);
       const detail = await invoke<SkillDetail>(
         "get_skill_detail",
-        buildDetailInvokeArgs(getActiveDetailRequest(skillId))
+        buildDetailInvokeArgs(detailRequest)
       );
+      setActiveDetailRequestFromDetail(detailRequest, detail);
       set({ detail, installingAgentId: null });
     } catch (err) {
       set({ error: String(err), installingAgentId: null });
@@ -305,10 +336,12 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     try {
       await invoke("uninstall_skill_from_agent", { skillId, agentId });
       // Reload detail so the installations list reflects the removal.
+      const detailRequest = getActiveDetailRequest(skillId);
       const detail = await invoke<SkillDetail>(
         "get_skill_detail",
-        buildDetailInvokeArgs(getActiveDetailRequest(skillId))
+        buildDetailInvokeArgs(detailRequest)
       );
+      setActiveDetailRequestFromDetail(detailRequest, detail);
       set({ detail, installingAgentId: null });
     } catch (err) {
       set({ error: String(err), installingAgentId: null });
@@ -320,10 +353,12 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       return;
     }
     try {
+      const detailRequest = getActiveDetailRequest(skillId);
       const detail = await invoke<SkillDetail>(
         "get_skill_detail",
-        buildDetailInvokeArgs(getActiveDetailRequest(skillId))
+        buildDetailInvokeArgs(detailRequest)
       );
+      setActiveDetailRequestFromDetail(detailRequest, detail);
       set((state) => ({
         detail,
         content: state.content,

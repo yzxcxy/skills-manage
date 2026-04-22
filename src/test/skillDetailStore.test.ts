@@ -70,6 +70,43 @@ const mockDetailAfterUninstall: SkillDetail = {
   installations: [],
 };
 
+const mockClaudeMarketplaceDetail: SkillDetail = {
+  ...mockDetail,
+  row_id: "claude-code::marketplace::frontend-design",
+  file_path:
+    "~/.claude/plugins/marketplaces/publisher/frontend-design/SKILL.md",
+  dir_path: "~/.claude/plugins/marketplaces/publisher/frontend-design",
+  canonical_path: undefined,
+  is_central: false,
+  source: "marketplace",
+  source_kind: "marketplace",
+  source_root: "~/.claude/plugins/marketplaces/publisher",
+  is_read_only: true,
+  installations: [],
+};
+
+const mockClaudeUserDetail: SkillDetail = {
+  ...mockDetail,
+  row_id: "claude-code::user::frontend-design",
+  file_path: "~/.claude/skills/frontend-design/SKILL.md",
+  dir_path: "~/.claude/skills/frontend-design",
+  is_central: false,
+  source: "user",
+  source_kind: "user",
+  source_root: "~/.claude/skills",
+};
+
+const mockClaudeUserDetailAfterInstall: SkillDetail = {
+  ...mockDetailAfterInstall,
+  row_id: "claude-code::user::frontend-design",
+  file_path: "~/.claude/skills/frontend-design/SKILL.md",
+  dir_path: "~/.claude/skills/frontend-design",
+  is_central: false,
+  source: "user",
+  source_kind: "user",
+  source_root: "~/.claude/skills",
+};
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("skillDetailStore", () => {
@@ -125,12 +162,32 @@ describe("skillDetailStore", () => {
     });
   });
 
-  it("calls read_skill_content with skillId", async () => {
+  it("reads content from the resolved detail file path", async () => {
     vi.mocked(invoke).mockResolvedValueOnce(mockDetail).mockResolvedValueOnce(mockContent);
     await useSkillDetailStore.getState().loadDetail({ skillId: "frontend-design" });
-    expect(invoke).toHaveBeenCalledWith("read_skill_content", {
-      skillId: "frontend-design",
+    expect(invoke).toHaveBeenCalledWith("read_file_by_path", {
+      path: mockDetail.file_path,
     });
+  });
+
+  it("reads content from the resolved Claude row path even when the caller omits rowId", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(mockClaudeMarketplaceDetail)
+      .mockResolvedValueOnce(mockContent);
+
+    await useSkillDetailStore.getState().loadDetail({
+      skillId: "frontend-design",
+      agentId: "claude-code",
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_skill_detail", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "read_file_by_path", {
+      path: mockClaudeMarketplaceDetail.file_path,
+    });
+    expect(useSkillDetailStore.getState().content).toBe(mockContent);
   });
 
   it("stores detail and content after successful load", async () => {
@@ -304,6 +361,26 @@ describe("skillDetailStore", () => {
       skillId: "frontend-design",
       agentId: "claude-code",
       rowId: "claude-code::user::frontend-design",
+    });
+    await useSkillDetailStore.getState().installSkill("frontend-design", "cursor");
+
+    expect(invoke).toHaveBeenLastCalledWith("get_skill_detail", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+      rowId: "claude-code::user::frontend-design",
+    });
+  });
+
+  it("promotes the resolved Claude row id into subsequent refreshes when the initial request omitted rowId", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(mockClaudeUserDetail)
+      .mockResolvedValueOnce(mockContent)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(mockClaudeUserDetailAfterInstall);
+
+    await useSkillDetailStore.getState().loadDetail({
+      skillId: "frontend-design",
+      agentId: "claude-code",
     });
     await useSkillDetailStore.getState().installSkill("frontend-design", "cursor");
 
