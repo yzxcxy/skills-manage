@@ -86,6 +86,29 @@ pub enum ImportTarget {
     Platform(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoveredPlatformInstallMethod {
+    Symlink,
+    Copy,
+}
+
+impl DiscoveredPlatformInstallMethod {
+    fn parse(method: Option<&str>) -> Result<Self, String> {
+        match method.unwrap_or("symlink") {
+            "symlink" | "auto" => Ok(Self::Symlink),
+            "copy" => Ok(Self::Copy),
+            other => Err(format!("Unsupported install method '{}'", other)),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Symlink => "symlink",
+            Self::Copy => "copy",
+        }
+    }
+}
+
 /// Result of importing a discovered skill.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportResult {
@@ -974,18 +997,27 @@ pub async fn import_discovered_skill_to_platform(
     state: State<'_, AppState>,
     discovered_skill_id: String,
     agent_id: String,
+    method: Option<String>,
 ) -> Result<ImportResult, String> {
-    import_discovered_skill_to_platform_from_pool(&state.db, &discovered_skill_id, &agent_id).await
+    import_discovered_skill_to_platform_from_pool(
+        &state.db,
+        &discovered_skill_id,
+        &agent_id,
+        method.as_deref(),
+    )
+    .await
 }
 
 async fn import_discovered_skill_to_platform_from_pool(
     pool: &DbPool,
     discovered_skill_id: &str,
     agent_id: &str,
+    method: Option<&str>,
 ) -> Result<ImportResult, String> {
     if agent_id == OBSIDIAN_PLATFORM_ID {
         return Err("Obsidian vaults are Discover sources, not install targets".to_string());
     }
+    let install_method = DiscoveredPlatformInstallMethod::parse(method)?;
 
     // Look up the discovered skill.
     let skill = db::get_discovered_skill_by_id(pool, discovered_skill_id)
@@ -1021,8 +1053,15 @@ async fn import_discovered_skill_to_platform_from_pool(
 
     // Create symlink from discovered skill dir to platform dir.
     let src_path = Path::new(&skill.dir_path);
-    let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
-    super::linker::create_symlink(&relative_target, &target_path)?;
+    match install_method {
+        DiscoveredPlatformInstallMethod::Symlink => {
+            let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
+            super::linker::create_symlink(&relative_target, &target_path)?;
+        }
+        DiscoveredPlatformInstallMethod::Copy => {
+            super::linker::copy_dir_all(src_path, &target_path)?;
+        }
+    }
 
     // Record the installation.
     let now = Utc::now().to_rfc3339();
@@ -1030,16 +1069,20 @@ async fn import_discovered_skill_to_platform_from_pool(
     // Also ensure the skill is in the skills table.
     let skill_md_path = src_path.join("SKILL.md");
     let info = super::scanner::parse_skill_md(&skill_md_path);
+    let stored_skill_md_path = match install_method {
+        DiscoveredPlatformInstallMethod::Symlink => skill_md_path.clone(),
+        DiscoveredPlatformInstallMethod::Copy => target_path.join("SKILL.md"),
+    };
 
     if let Some(skill_info) = info {
         let db_skill = db::Skill {
             id: skill_dir_name.clone(),
             name: skill_info.name,
             description: skill_info.description,
-            file_path: skill_md_path.to_string_lossy().into_owned(),
+            file_path: stored_skill_md_path.to_string_lossy().into_owned(),
             canonical_path: None,
             is_central: false,
-            source: Some("symlink".to_string()),
+            source: Some(install_method.as_str().to_string()),
             content: None,
             scanned_at: now.clone(),
         };
@@ -1050,8 +1093,11 @@ async fn import_discovered_skill_to_platform_from_pool(
         skill_id: skill_dir_name.clone(),
         agent_id: agent_id.to_string(),
         installed_path: target_path.to_string_lossy().into_owned(),
-        link_type: "symlink".to_string(),
-        symlink_target: Some(skill.dir_path.clone()),
+        link_type: install_method.as_str().to_string(),
+        symlink_target: match install_method {
+            DiscoveredPlatformInstallMethod::Symlink => Some(skill.dir_path.clone()),
+            DiscoveredPlatformInstallMethod::Copy => None,
+        },
         created_at: now,
     };
     db::upsert_skill_installation(pool, &installation).await?;
@@ -1846,6 +1892,328 @@ mod tests {
         assert!(
             record.is_some(),
             "discovered skill record should be kept after platform install"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_correlated_fixture_scan_import_cache_and_vault_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        let claude_install_dir = tmp.path().join("claude-platform-skills");
+        std::fs::create_dir_all(&central_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(claude_install_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let obsidian_parent = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("iCloud~md~obsidian")
+            .join("Documents");
+        let vault_dir = obsidian_parent.join("make-money");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let source_skill_dir = create_skill(
+            &vault_dir.join(".agents/skills"),
+            "money-researcher",
+            "Money Researcher",
+            "Correlated fixture skill",
+        );
+        std::fs::write(
+            source_skill_dir.join("notes.md"),
+            "vault-owned fixture content must remain unchanged",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(vault_dir.join(".claude/skills")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                &source_skill_dir,
+                vault_dir.join(".claude/skills/money-researcher"),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(
+                vault_dir.join(".agents/skills/missing-target"),
+                vault_dir.join(".claude/skills/broken-money-researcher"),
+            )
+            .unwrap();
+        }
+
+        let ordinary_project = obsidian_parent.join("ordinary-project");
+        let ordinary_skill_dir = create_skill(
+            &ordinary_project.join(".claude/skills"),
+            "ordinary-check",
+            "Ordinary Check",
+            "Non-Obsidian regression",
+        );
+
+        db::add_scan_directory(
+            &pool,
+            &obsidian_parent.to_string_lossy(),
+            Some("Fixture Obsidian Parent"),
+        )
+        .await
+        .unwrap();
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, obsidian_parent.to_string_lossy());
+        assert!(roots[0].enabled);
+        assert!(roots[0].exists);
+
+        let before_manifest = vault_manifest(&vault_dir);
+        let result = start_project_scan_impl(&pool, roots.clone(), &central_dir, |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_projects, 2);
+        assert_eq!(result.total_skills, 2);
+
+        let vault = result
+            .projects
+            .iter()
+            .find(|project| project.project_path == vault_dir.to_string_lossy())
+            .expect("Obsidian vault project should be present");
+        assert_eq!(vault.project_name, "make-money");
+        assert_eq!(vault.skills.len(), 1);
+        let fixture_skill = &vault.skills[0];
+        assert_eq!(fixture_skill.name, "Money Researcher");
+        assert_eq!(
+            fixture_skill.description.as_deref(),
+            Some("Correlated fixture skill")
+        );
+        assert_eq!(fixture_skill.platform_id, OBSIDIAN_PLATFORM_ID);
+        assert_eq!(fixture_skill.platform_name, OBSIDIAN_PLATFORM_NAME);
+        assert_eq!(fixture_skill.dir_path, source_skill_dir.to_string_lossy());
+        assert_eq!(
+            fixture_skill.file_path,
+            source_skill_dir.join("SKILL.md").to_string_lossy()
+        );
+        assert!(
+            fixture_skill.id.starts_with("obsidian__"),
+            "fixture skill id should be path-qualified for cache/UI correlation"
+        );
+
+        let ordinary = result
+            .projects
+            .iter()
+            .find(|project| project.project_path == ordinary_project.to_string_lossy())
+            .expect("ordinary non-Obsidian project should remain discoverable");
+        assert_eq!(ordinary.skills.len(), 1);
+        assert_eq!(ordinary.skills[0].platform_id, "claude-code");
+        assert_eq!(
+            ordinary.skills[0].dir_path,
+            ordinary_skill_dir.to_string_lossy()
+        );
+
+        let persisted = db::get_discovered_skill_by_id(&pool, &fixture_skill.id)
+            .await
+            .unwrap()
+            .expect("Obsidian fixture should be persisted");
+        assert_eq!(persisted.project_path, vault_dir.to_string_lossy());
+        assert_eq!(persisted.dir_path, source_skill_dir.to_string_lossy());
+
+        let cached = get_discovered_skills_impl(&pool, &central_dir)
+            .await
+            .unwrap();
+        let cached_vault = cached
+            .iter()
+            .find(|project| project.project_path == vault_dir.to_string_lossy())
+            .expect("cached Obsidian vault should reload by project path");
+        assert_eq!(cached_vault.skills[0].id, fixture_skill.id);
+        assert!(!cached_vault.skills[0].is_already_central);
+
+        let platform_result = import_discovered_skill_to_platform_from_pool(
+            &pool,
+            &fixture_skill.id,
+            "claude-code",
+            Some("symlink"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(platform_result.skill_id, "money-researcher");
+        let platform_target = claude_install_dir.join("money-researcher");
+        assert!(std::fs::symlink_metadata(&platform_target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let platform_install = db::get_skill_installations(&pool, "money-researcher")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|installation| installation.agent_id == "claude-code")
+            .expect("platform install row should be recorded for the same fixture skill");
+        assert_eq!(platform_install.link_type, "symlink");
+        assert_eq!(
+            platform_install.symlink_target.as_deref(),
+            Some(&*source_skill_dir.to_string_lossy())
+        );
+        assert!(
+            db::get_discovered_skill_by_id(&pool, &fixture_skill.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "platform install should keep the fixture row available for later central import"
+        );
+        assert_eq!(
+            before_manifest,
+            vault_manifest(&vault_dir),
+            "platform install must not mutate the source Obsidian vault"
+        );
+
+        let import_result =
+            import_discovered_skill_to_central_impl(&pool, &fixture_skill.id, &central_dir)
+                .await
+                .unwrap();
+        assert_eq!(import_result.skill_id, "money-researcher");
+        let central_target = central_dir.join("money-researcher");
+        assert!(central_target.join("SKILL.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(central_target.join("notes.md")).unwrap(),
+            "vault-owned fixture content must remain unchanged"
+        );
+        assert!(
+            db::get_discovered_skill_by_id(&pool, &fixture_skill.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "central import should remove the immediate Obsidian discovered row"
+        );
+        assert!(
+            db::get_discovered_skill_by_id(&pool, &ordinary.skills[0].id)
+                .await
+                .unwrap()
+                .is_some(),
+            "central import should not remove ordinary Discover rows"
+        );
+        assert_eq!(
+            before_manifest,
+            vault_manifest(&vault_dir),
+            "scan and import must not mutate the source Obsidian vault"
+        );
+
+        let rescan = start_project_scan_impl(&pool, roots, &central_dir, |_| {})
+            .await
+            .unwrap();
+        let rescanned_vault = rescan
+            .projects
+            .iter()
+            .find(|project| project.project_path == vault_dir.to_string_lossy())
+            .expect("vault should be rediscovered after central import");
+        assert!(
+            rescanned_vault.skills[0].is_already_central,
+            "rescan should correlate the same fixture with its central target"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_discovered_platform_install_honors_symlink_and_copy_methods() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        let claude_dir = tmp.path().join("claude-skills");
+        let cursor_dir = tmp.path().join("cursor-skills");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(claude_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
+            .bind(cursor_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let vault_dir = tmp.path().join("make-money");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let skill_dir = create_skill(
+            &vault_dir.join(".agents/skills"),
+            "platform-methods",
+            "Platform Methods",
+            "Install method fixture",
+        );
+        std::fs::write(skill_dir.join("extra.txt"), "copy me").unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            &pool,
+            "obsidian__fixture__platform-methods",
+            "Platform Methods",
+            Some("Install method fixture"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &vault_dir.to_string_lossy(),
+            "make-money",
+            OBSIDIAN_PLATFORM_ID,
+            &now,
+        )
+        .await
+        .unwrap();
+
+        let before_manifest = vault_manifest(&vault_dir);
+
+        import_discovered_skill_to_platform_from_pool(
+            &pool,
+            "obsidian__fixture__platform-methods",
+            "claude-code",
+            Some("symlink"),
+        )
+        .await
+        .unwrap();
+        let symlink_path = claude_dir.join("platform-methods");
+        let symlink_meta = std::fs::symlink_metadata(&symlink_path).unwrap();
+        assert!(symlink_meta.file_type().is_symlink());
+        let symlink_install = db::get_skill_installations(&pool, "platform-methods")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|installation| installation.agent_id == "claude-code")
+            .expect("symlink installation row should exist");
+        assert_eq!(symlink_install.link_type, "symlink");
+        assert_eq!(
+            symlink_install.symlink_target.as_deref(),
+            Some(&*skill_dir.to_string_lossy())
+        );
+
+        import_discovered_skill_to_platform_from_pool(
+            &pool,
+            "obsidian__fixture__platform-methods",
+            "cursor",
+            Some("copy"),
+        )
+        .await
+        .unwrap();
+        let copy_path = cursor_dir.join("platform-methods");
+        let copy_meta = std::fs::symlink_metadata(&copy_path).unwrap();
+        assert!(copy_meta.is_dir());
+        assert!(!copy_meta.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(copy_path.join("extra.txt")).unwrap(),
+            "copy me"
+        );
+        let copy_install = db::get_skill_installations(&pool, "platform-methods")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|installation| installation.agent_id == "cursor")
+            .expect("copy installation row should exist");
+        assert_eq!(copy_install.link_type, "copy");
+        assert!(copy_install.symlink_target.is_none());
+
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "obsidian__fixture__platform-methods")
+                .await
+                .unwrap()
+                .is_some(),
+            "platform installs must keep cached Obsidian row for multi-install"
+        );
+        assert_eq!(
+            before_manifest,
+            vault_manifest(&vault_dir),
+            "platform installs must not mutate the source Obsidian vault"
         );
     }
 
@@ -3162,6 +3530,7 @@ mod tests {
             &pool,
             "obsidian__fixture__portable-skill",
             OBSIDIAN_PLATFORM_ID,
+            Some("symlink"),
         )
         .await;
         assert!(result.is_err(), "Obsidian is not an install target");

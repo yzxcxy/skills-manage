@@ -485,6 +485,32 @@ describe("discoverStore", () => {
     expect(useDiscoverStore.getState().totalSkillsFound).toBe(2);
   });
 
+  it("forwards the selected install method for Obsidian platform installs", async () => {
+    useDiscoverStore.setState({
+      discoveredProjects: mockObsidianProjects,
+      totalSkillsFound: 2,
+    });
+    const platformResult: DiscoverImportResult = {
+      skill_id: "zettel-helper",
+      target: "cursor",
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(platformResult);
+
+    await useDiscoverStore.getState().importToPlatform(
+      "obsidian__make-money__zettel-helper",
+      "cursor",
+      "copy"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("import_discovered_skill_to_platform", {
+      discoveredSkillId: "obsidian__make-money__zettel-helper",
+      agentId: "cursor",
+      method: "copy",
+    });
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockObsidianProjects);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(2);
+  });
+
   it("rejects Obsidian as a platform install target without invoking the backend", async () => {
     useDiscoverStore.setState({ discoveredProjects: mockObsidianProjects });
 

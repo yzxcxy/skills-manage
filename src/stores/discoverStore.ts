@@ -77,7 +77,11 @@ interface DiscoverState {
   refreshCounts: () => Promise<void>;
   rescanFromDisk: () => Promise<void>;
   importToCentral: (skillId: string) => Promise<DiscoverImportResult>;
-  importToPlatform: (skillId: string, agentId: string) => Promise<DiscoverImportResult>;
+  importToPlatform: (
+    skillId: string,
+    agentId: string,
+    method?: "symlink" | "copy"
+  ) => Promise<DiscoverImportResult>;
   clearResults: () => Promise<void>;
   setGroupBy: (groupBy: "project" | "platform" | "skill") => void;
   setPlatformFilter: (platformId: string | null) => void;
@@ -384,7 +388,11 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
     }
   },
 
-  importToPlatform: async (skillId: string, agentId: string) => {
+  importToPlatform: async (
+    skillId: string,
+    agentId: string,
+    method?: "symlink" | "copy"
+  ) => {
     set({ error: null });
     if (agentId === OBSIDIAN_AGENT_ID) {
       const error = "Obsidian is a source-only Discover category and cannot be used as an install target.";
@@ -394,7 +402,11 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
     try {
       const result = await invoke<DiscoverImportResult>(
         "import_discovered_skill_to_platform",
-        { discoveredSkillId: skillId, agentId }
+        {
+          discoveredSkillId: skillId,
+          agentId,
+          ...(method ? { method } : {}),
+        }
       );
       // NOTE: We do NOT remove the skill from discovered results here because
       // the Rust backend no longer deletes the discovered record on platform

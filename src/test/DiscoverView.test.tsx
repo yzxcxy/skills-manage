@@ -22,6 +22,7 @@ vi.mock("../components/central/InstallDialog", () => ({
   InstallDialog: (props: {
     open: boolean;
     agents: Array<{ id: string; display_name: string }>;
+    onInstall: (skillId: string, agentIds: string[], method: "symlink" | "copy") => Promise<void>;
   }) => {
     mockInstallDialogProps(props);
     return props.open ? (
@@ -287,6 +288,8 @@ const mockClearSelection = vi.fn();
 const mockRescan = vi.fn();
 const mockRescanFromDisk = vi.fn();
 const mockStopScan = vi.fn();
+const mockRefreshDiscoverCounts = vi.fn();
+const mockRefreshPlatformCounts = vi.fn();
 const mockUseDiscoverStore = vi.mocked(useDiscoverStore);
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 
@@ -319,7 +322,7 @@ function buildDiscoverStoreState(overrides = {}) {
     setScanRootEnabled: vi.fn(),
     clearResults: vi.fn(),
     selectAllVisible: vi.fn(),
-    refreshCounts: vi.fn(),
+    refreshCounts: mockRefreshDiscoverCounts,
     rescanFromDisk: mockRescanFromDisk,
     clearError: vi.fn(),
     error: null,
@@ -337,7 +340,7 @@ function buildPlatformStoreState(overrides = {}) {
     error: null,
     initialize: vi.fn(),
     rescan: mockRescan,
-    refreshCounts: vi.fn(),
+    refreshCounts: mockRefreshPlatformCounts,
     ...overrides,
   };
 }
@@ -639,6 +642,40 @@ describe("DiscoverView", () => {
     const dialog = screen.getByTestId("install-dialog");
     expect(within(dialog).getByText("Claude Code")).toBeInTheDocument();
     expect(within(dialog).queryByText("Obsidian")).not.toBeInTheDocument();
+  });
+
+  it("passes the selected install method through when installing an Obsidian vault skill", async () => {
+    mockImportToPlatform.mockResolvedValueOnce({ skill_id: "zettel-helper", target: "claude-code" });
+    mockRefreshDiscoverCounts.mockResolvedValueOnce(undefined);
+    mockRefreshPlatformCounts.mockResolvedValueOnce(undefined);
+    mockUseDiscoverStore.mockImplementation((selector) =>
+      selector(
+        buildDiscoverStoreState({
+          discoveredProjects: obsidianProjects,
+          totalSkillsFound: 1,
+        })
+      )
+    );
+
+    renderDiscoverView(`/discover/${encodeURIComponent(obsidianVaultPath)}`);
+
+    fireEvent.click(screen.getByTitle("Install to Platform"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("install-dialog")).toBeInTheDocument();
+    });
+    const lastProps = mockInstallDialogProps.mock.calls.at(-1)?.[0];
+    expect(lastProps).toBeTruthy();
+
+    await lastProps.onInstall(obsidianSkill.id, ["claude-code"], "copy");
+
+    await waitFor(() => {
+      expect(mockImportToPlatform).toHaveBeenCalledWith(
+        obsidianSkill.id,
+        "claude-code",
+        "copy"
+      );
+    });
   });
 
   it("preserves selected project and right-panel scroll when closing the drawer and restores focus", async () => {

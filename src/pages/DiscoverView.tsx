@@ -321,13 +321,13 @@ export function DiscoverView() {
   }, [selectedSkillIds, handleInstallToCentral]);
 
   const handleInstallFromDialog = useCallback(
-    async (_skillId: string, agentIds: string[], _method: string) => {
+    async (_skillId: string, agentIds: string[], method: "symlink" | "copy") => {
       if (!installTargetSkill) return;
       const targetId = installTargetSkill.id;
       setImportingIds((prev) => new Set(prev).add(targetId));
       try {
         for (const agentId of agentIds) {
-          await importToPlatform(targetId, agentId);
+          await importToPlatform(targetId, agentId, method);
         }
         await Promise.all([refreshCounts(), refreshDiscoverCounts()]);
         toast.success(t("discover.importSuccess"));
