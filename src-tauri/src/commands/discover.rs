@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,6 +10,9 @@ use tauri::{Emitter, State};
 use crate::db::{self, DbPool};
 use crate::path_utils::{central_skills_dir, path_to_string, resolve_home_dir};
 use crate::AppState;
+
+const OBSIDIAN_PLATFORM_ID: &str = "obsidian";
+const OBSIDIAN_PLATFORM_NAME: &str = "Obsidian";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +102,10 @@ static SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
 /// Returns a list of candidate scan roots, checking which ones exist on disk.
 fn default_scan_roots() -> Vec<ScanRoot> {
     let home = resolve_home_dir();
+    default_scan_roots_for_home(&home)
+}
+
+fn default_scan_roots_for_home(home: &Path) -> Vec<ScanRoot> {
     let candidates = vec![
         (path_to_string(&home.join("projects")), "projects"),
         (path_to_string(&home.join("Documents")), "Documents"),
@@ -108,6 +115,16 @@ fn default_scan_roots() -> Vec<ScanRoot> {
         (path_to_string(&home.join("code")), "code"),
         (path_to_string(&home.join("repos")), "repos"),
         (path_to_string(&home.join("Desktop")), "Desktop"),
+        (
+            path_to_string(
+                &home
+                    .join("Library")
+                    .join("Mobile Documents")
+                    .join("iCloud~md~obsidian")
+                    .join("Documents"),
+            ),
+            "Obsidian iCloud",
+        ),
         // macOS: scan /Applications for apps with built-in skills (e.g. OpenClaw)
         ("/Applications".to_string(), "Applications"),
     ];
@@ -124,6 +141,87 @@ fn default_scan_roots() -> Vec<ScanRoot> {
             }
         })
         .collect()
+}
+
+fn normalized_scan_root_key(path: &str) -> String {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return path_to_string(&canonical);
+    }
+
+    let trimmed = path.trim();
+    let without_trailing = trimmed.trim_end_matches(['/', '\\']);
+    if without_trailing.is_empty() {
+        trimmed.to_string()
+    } else {
+        without_trailing.to_string()
+    }
+}
+
+fn label_for_custom_scan_root(path: &str, label: Option<&str>) -> String {
+    label
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+        })
+        .unwrap_or_else(|| path.to_string())
+}
+
+async fn build_scan_roots(pool: &DbPool, defaults: Vec<ScanRoot>) -> Result<Vec<ScanRoot>, String> {
+    let mut roots = defaults;
+    let mut seen_paths: HashSet<String> = roots
+        .iter()
+        .map(|root| normalized_scan_root_key(&root.path))
+        .collect();
+
+    let mut custom_dirs: Vec<_> = db::get_scan_directories(pool)
+        .await?
+        .into_iter()
+        .filter(|dir| !dir.is_builtin)
+        .collect();
+    custom_dirs.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.label.cmp(&b.label))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    for dir in custom_dirs {
+        let key = normalized_scan_root_key(&dir.path);
+        if !seen_paths.insert(key) {
+            continue;
+        }
+
+        roots.push(ScanRoot {
+            path: dir.path.clone(),
+            label: label_for_custom_scan_root(&dir.path, dir.label.as_deref()),
+            exists: Path::new(&dir.path).exists(),
+            enabled: dir.is_active,
+        });
+    }
+
+    // Load persisted enabled states from settings.
+    // We store a single JSON blob under the key "discover_scan_roots_config"
+    // mapping path -> enabled (bool). This override is applied after default
+    // and custom roots are merged so duplicate paths get one deterministic state.
+    if let Some(json) = db::get_setting(pool, "discover_scan_roots_config").await? {
+        let config: HashMap<String, bool> =
+            serde_json::from_str(&json).map_err(|e| format!("Invalid scan roots config: {}", e))?;
+        for root in &mut roots {
+            if let Some(&enabled) = config.get(&root.path) {
+                root.enabled = enabled;
+            }
+        }
+    }
+
+    Ok(roots)
+}
+
+async fn get_scan_roots_impl(pool: &DbPool) -> Result<Vec<ScanRoot>, String> {
+    build_scan_roots(pool, default_scan_roots()).await
 }
 
 /// Build the list of platform skill directory patterns to look for.
@@ -196,6 +294,168 @@ fn should_skip_dir(name: &str, depth: u32) -> bool {
     false
 }
 
+fn is_obsidian_vault_dir(path: &Path) -> bool {
+    path.join(".obsidian").is_dir()
+}
+
+fn file_name_or_unknown(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn stable_path_hash(path: &str) -> String {
+    // FNV-1a gives us a deterministic, compact path-derived component without
+    // adding a dependency or relying on randomized hash seeds.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in path.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn selected_skill_dir_name(dir_path: &str) -> String {
+    Path::new(dir_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn obsidian_qualified_id(vault_path: &str, skill_id: &str) -> String {
+    format!(
+        "{}__{}__{}",
+        OBSIDIAN_PLATFORM_ID,
+        stable_path_hash(vault_path),
+        skill_id
+    )
+}
+
+fn platform_display_name(platform_id: &str) -> String {
+    if platform_id == OBSIDIAN_PLATFORM_ID {
+        return OBSIDIAN_PLATFORM_NAME.to_string();
+    }
+
+    db::builtin_agents()
+        .iter()
+        .find(|agent| agent.id == platform_id)
+        .map(|agent| agent.display_name.clone())
+        .unwrap_or_else(|| platform_id.to_string())
+}
+
+fn scan_obsidian_vault(vault_dir: &Path, central_dir: &Path) -> Option<DiscoveredProject> {
+    if !is_obsidian_vault_dir(vault_dir) {
+        return None;
+    }
+
+    let project_path = path_to_string(vault_dir);
+    let project_name = file_name_or_unknown(vault_dir);
+    let mut selected_by_skill_id: BTreeMap<String, DiscoveredSkill> = BTreeMap::new();
+
+    // Priority order is intentional: .skills wins over .agents/skills, which
+    // wins over .claude/skills. Invalid directories are skipped by
+    // scanner::scan_directory and therefore never reserve a dedupe key.
+    for rel_source in [
+        PathBuf::from(".skills"),
+        PathBuf::from(".agents/skills"),
+        PathBuf::from(".claude/skills"),
+    ] {
+        let source_dir = vault_dir.join(rel_source);
+        let mut scanned = super::scanner::scan_directory(&source_dir, false);
+        scanned.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.dir_path.cmp(&b.dir_path)));
+
+        for skill in scanned {
+            if selected_by_skill_id.contains_key(&skill.id) {
+                continue;
+            }
+
+            let skill_dir_name = selected_skill_dir_name(&skill.dir_path);
+            let is_already_central = central_dir.join(skill_dir_name).exists();
+            selected_by_skill_id.insert(
+                skill.id.clone(),
+                DiscoveredSkill {
+                    id: obsidian_qualified_id(&project_path, &skill.id),
+                    name: skill.name,
+                    description: skill.description,
+                    file_path: skill.file_path,
+                    dir_path: skill.dir_path,
+                    platform_id: OBSIDIAN_PLATFORM_ID.to_string(),
+                    platform_name: OBSIDIAN_PLATFORM_NAME.to_string(),
+                    project_path: project_path.clone(),
+                    project_name: project_name.clone(),
+                    is_already_central,
+                },
+            );
+        }
+    }
+
+    if selected_by_skill_id.is_empty() {
+        None
+    } else {
+        Some(DiscoveredProject {
+            project_path,
+            project_name,
+            skills: selected_by_skill_id.into_values().collect(),
+        })
+    }
+}
+
+fn scan_regular_project_dir(
+    project_dir: &Path,
+    patterns: &[(String, String, PathBuf)],
+    central_dir: &Path,
+) -> Vec<DiscoveredSkill> {
+    let mut project_skills: Vec<DiscoveredSkill> = Vec::new();
+
+    for (agent_id, display_name, rel_pattern) in patterns {
+        let skill_dir = project_dir.join(rel_pattern);
+
+        if !skill_dir.exists() {
+            continue;
+        }
+
+        let scanned = super::scanner::scan_directory(&skill_dir, false);
+
+        for skill in scanned {
+            // Preserve the established ordinary Discover row identity. Obsidian
+            // uses path-hashed IDs because duplicate vault basenames are a
+            // mission requirement, but changing ordinary IDs would strand
+            // existing cached Discover rows.
+            let project_name = file_name_or_unknown(project_dir);
+            let project_path = project_dir.to_string_lossy().into_owned();
+
+            let qualified_id = format!(
+                "{}__{}__{}",
+                agent_id,
+                project_name.to_lowercase().replace(' ', "-"),
+                skill.id
+            );
+
+            // Check if this skill already exists in central.
+            let skill_dir_name = selected_skill_dir_name(&skill.dir_path);
+            let central_skill_path = central_dir.join(skill_dir_name);
+            let is_already_central = central_skill_path.exists();
+
+            project_skills.push(DiscoveredSkill {
+                id: qualified_id,
+                name: skill.name,
+                description: skill.description,
+                file_path: skill.file_path,
+                dir_path: skill.dir_path,
+                platform_id: agent_id.clone(),
+                platform_name: display_name.clone(),
+                project_path,
+                project_name,
+                is_already_central,
+            });
+        }
+    }
+
+    project_skills
+}
+
 /// Recursively walk a scan root directory, looking for project-level skill dirs.
 ///
 /// Traverses subdirectories up to `MAX_SCAN_DEPTH` levels deep, checking each
@@ -209,22 +469,32 @@ fn should_skip_dir(name: &str, depth: u32) -> bool {
 ///
 /// The `project_path` is the directory that CONTAINS the platform dir
 /// (e.g., `~/Documents/GitHubMe/minimax-skills` for `.claude/skills/` found there).
+#[cfg(test)]
 fn scan_root_for_projects(
     root: &Path,
     patterns: &[(String, String, PathBuf)],
     central_dir: &Path,
 ) -> Vec<DiscoveredProject> {
     let mut projects = Vec::new();
-    let mut seen_project_paths = std::collections::HashSet::new();
-    scan_root_recursive(
+    let mut seen_project_paths = HashSet::new();
+    scan_root_for_projects_with_seen(
         root,
         patterns,
         central_dir,
-        0,
-        &mut projects,
         &mut seen_project_paths,
+        &mut projects,
     );
     projects
+}
+
+fn scan_root_for_projects_with_seen(
+    root: &Path,
+    patterns: &[(String, String, PathBuf)],
+    central_dir: &Path,
+    seen_project_paths: &mut HashSet<String>,
+    projects: &mut Vec<DiscoveredProject>,
+) {
+    scan_root_recursive(root, patterns, central_dir, 0, projects, seen_project_paths);
 }
 
 /// Inner recursive walker. Accumulates found projects into `projects`.
@@ -236,13 +506,35 @@ fn scan_root_recursive(
     central_dir: &Path,
     depth: u32,
     projects: &mut Vec<DiscoveredProject>,
-    seen_project_paths: &mut std::collections::HashSet<String>,
+    seen_project_paths: &mut HashSet<String>,
 ) {
     if depth > MAX_SCAN_DEPTH {
         return;
     }
     if SCAN_CANCEL.load(Ordering::Relaxed) {
         return;
+    }
+
+    let current_path_key = current_dir.to_string_lossy().into_owned();
+    if !seen_project_paths.contains(&current_path_key) {
+        if let Some(project) = scan_obsidian_vault(current_dir, central_dir) {
+            seen_project_paths.insert(current_path_key);
+            projects.push(project);
+            // A vault is a single Discover project. Do not also treat its
+            // `.agents/skills` or `.claude/skills` directories as ordinary
+            // platform projects.
+            return;
+        }
+
+        let project_skills = scan_regular_project_dir(current_dir, patterns, central_dir);
+        if !project_skills.is_empty() {
+            seen_project_paths.insert(current_path_key.clone());
+            projects.push(DiscoveredProject {
+                project_path: current_path_key,
+                project_name: file_name_or_unknown(current_dir),
+                skills: project_skills,
+            });
+        }
     }
 
     let entries = match std::fs::read_dir(current_dir) {
@@ -276,73 +568,6 @@ fn scan_root_recursive(
             continue;
         }
 
-        // Check if this directory is a "project" containing platform skill dirs.
-        let mut project_skills: Vec<DiscoveredSkill> = Vec::new();
-
-        for (agent_id, display_name, rel_pattern) in patterns {
-            let skill_dir = entry_path.join(rel_pattern);
-
-            if !skill_dir.exists() {
-                continue;
-            }
-
-            let scanned = super::scanner::scan_directory(&skill_dir, false);
-
-            for skill in scanned {
-                // Derive a unique ID that includes the project path to avoid
-                // collisions with global skills that share the same directory name.
-                let project_name = entry_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                let qualified_id = format!(
-                    "{}__{}__{}",
-                    agent_id,
-                    project_name.to_lowercase().replace(' ', "-"),
-                    skill.id
-                );
-
-                // Check if this skill already exists in central.
-                let central_skill_path = central_dir.join(&skill.id);
-                let is_already_central = central_skill_path.exists();
-
-                project_skills.push(DiscoveredSkill {
-                    id: qualified_id,
-                    name: skill.name,
-                    description: skill.description,
-                    file_path: skill.file_path,
-                    dir_path: skill.dir_path,
-                    platform_id: agent_id.clone(),
-                    platform_name: display_name.clone(),
-                    project_path: entry_path.to_string_lossy().into_owned(),
-                    project_name: project_name.clone(),
-                    is_already_central,
-                });
-            }
-        }
-
-        // If this directory contains platform skills, record it as a project.
-        if !project_skills.is_empty() {
-            let project_path_key = entry_path.to_string_lossy().into_owned();
-            if !seen_project_paths.contains(&project_path_key) {
-                seen_project_paths.insert(project_path_key.clone());
-                let project_name = entry_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                projects.push(DiscoveredProject {
-                    project_path: project_path_key,
-                    project_name,
-                    skills: project_skills,
-                });
-            }
-        }
-
-        // Continue recursion into this directory.
         scan_root_recursive(
             &entry_path,
             patterns,
@@ -391,15 +616,134 @@ async fn reconcile_discovered_skills(
             continue;
         }
 
-        // Check if the skill's directory still exists on disk.
-        let dir_exists = Path::new(&row.dir_path).exists();
+        // Obsidian rows are authoritative for the scanned vault scope: if a
+        // rescan did not emit the row, it may have lost validity, priority, or
+        // its `.obsidian` marker even if the old directory still exists. For
+        // ordinary rows, preserve the prior conservative behavior and only
+        // purge directories that are actually gone.
+        let should_delete = if row.platform_id == OBSIDIAN_PLATFORM_ID {
+            true
+        } else {
+            !Path::new(&row.dir_path).exists()
+        };
 
-        if !dir_exists {
+        if should_delete {
             db::delete_discovered_skill(pool, &row.id).await?;
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum DiscoverEvent {
+    Found(FoundPayload),
+    Progress(ProgressPayload),
+    Complete(CompletePayload),
+}
+
+async fn start_project_scan_impl<F>(
+    pool: &DbPool,
+    roots: Vec<ScanRoot>,
+    central_dir: &Path,
+    mut emit_event: F,
+) -> Result<DiscoverResult, String>
+where
+    F: FnMut(DiscoverEvent),
+{
+    // Build platform skill patterns from registered agents.
+    let patterns = platform_skill_patterns(pool);
+
+    // Filter to enabled roots that exist.
+    let enabled_roots: Vec<&ScanRoot> = roots.iter().filter(|r| r.enabled && r.exists).collect();
+    let total_roots = enabled_roots.len();
+
+    let mut all_projects: Vec<DiscoveredProject> = Vec::new();
+    let mut total_skills = 0;
+    let mut roots_scanned = 0;
+    let mut seen_project_paths = HashSet::new();
+
+    for root in &enabled_roots {
+        if SCAN_CANCEL.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let root_path = Path::new(&root.path);
+        let before_project_count = all_projects.len();
+        scan_root_for_projects_with_seen(
+            root_path,
+            &patterns,
+            central_dir,
+            &mut seen_project_paths,
+            &mut all_projects,
+        );
+        let found_projects: Vec<DiscoveredProject> = all_projects[before_project_count..].to_vec();
+
+        roots_scanned += 1;
+        let percent = if total_roots > 0 {
+            (roots_scanned as u32 * 100) / total_roots as u32
+        } else {
+            100
+        };
+
+        for project in &found_projects {
+            total_skills += project.skills.len();
+
+            emit_event(DiscoverEvent::Found(FoundPayload {
+                project: project.clone(),
+            }));
+        }
+
+        emit_event(DiscoverEvent::Progress(ProgressPayload {
+            percent: percent.min(100),
+            current_path: root.path.clone(),
+            skills_found: total_skills,
+            projects_found: all_projects.len(),
+        }));
+    }
+
+    // Persist discovered skills to the database.
+    let now = Utc::now().to_rfc3339();
+
+    // Collect all discovered skill IDs found in this scan for reconciliation.
+    let mut found_skill_ids: Vec<String> = Vec::new();
+
+    for project in &all_projects {
+        for skill in &project.skills {
+            found_skill_ids.push(skill.id.clone());
+
+            db::insert_discovered_skill(
+                pool,
+                &skill.id,
+                &skill.name,
+                skill.description.as_deref(),
+                &skill.file_path,
+                &skill.dir_path,
+                &skill.project_path,
+                &skill.project_name,
+                &skill.platform_id,
+                &now,
+            )
+            .await?;
+        }
+    }
+
+    // ── Cache reconciliation ──────────────────────────────────────────────────
+    // Remove stale discovered_skills rows within the scanned scope.
+    reconcile_discovered_skills(pool, &enabled_roots, &found_skill_ids).await?;
+
+    let total_projects = all_projects.len();
+
+    emit_event(DiscoverEvent::Complete(CompletePayload {
+        total_projects,
+        total_skills,
+    }));
+
+    Ok(DiscoverResult {
+        total_projects,
+        total_skills,
+        projects: all_projects,
+    })
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
@@ -416,23 +760,7 @@ pub async fn discover_scan_roots() -> Result<Vec<ScanRoot>, String> {
 /// persisted enabled/disabled states from the settings table.
 #[tauri::command]
 pub async fn get_scan_roots(state: State<'_, AppState>) -> Result<Vec<ScanRoot>, String> {
-    let pool = &state.db;
-    let mut roots = default_scan_roots();
-
-    // Load persisted enabled states from settings.
-    // We store a single JSON blob under the key "discover_scan_roots_config"
-    // mapping path -> enabled (bool).
-    if let Some(json) = db::get_setting(pool, "discover_scan_roots_config").await? {
-        let config: HashMap<String, bool> =
-            serde_json::from_str(&json).map_err(|e| format!("Invalid scan roots config: {}", e))?;
-        for root in &mut roots {
-            if let Some(&enabled) = config.get(&root.path) {
-                root.enabled = enabled;
-            }
-        }
-    }
-
-    Ok(roots)
+    get_scan_roots_impl(&state.db).await
 }
 
 /// Persist the enabled/disabled state of a scan root.
@@ -474,114 +802,19 @@ pub async fn start_project_scan(
     SCAN_CANCEL.store(false, Ordering::Relaxed);
 
     let pool = &state.db;
-
-    // Build platform skill patterns from registered agents.
-    let patterns = platform_skill_patterns(pool);
-
-    // Determine central skills dir.
     let central_dir = central_skills_dir();
-
-    // Filter to enabled roots that exist.
-    let enabled_roots: Vec<&ScanRoot> = roots.iter().filter(|r| r.enabled && r.exists).collect();
-    let total_roots = enabled_roots.len();
-
-    let mut all_projects: Vec<DiscoveredProject> = Vec::new();
-    let mut total_skills = 0;
-    let mut roots_scanned = 0;
-
-    for root in &enabled_roots {
-        if SCAN_CANCEL.load(Ordering::Relaxed) {
-            break;
+    start_project_scan_impl(pool, roots, &central_dir, |event| match event {
+        DiscoverEvent::Found(payload) => {
+            let _ = app.emit("discover:found", payload);
         }
-
-        let root_path = Path::new(&root.path);
-        let found_projects = scan_root_for_projects(root_path, &patterns, &central_dir);
-
-        roots_scanned += 1;
-        let percent = if total_roots > 0 {
-            (roots_scanned as u32 * 100) / total_roots as u32
-        } else {
-            100
-        };
-
-        for project in &found_projects {
-            total_skills += project.skills.len();
-
-            // Emit per-project found event.
-            let _ = app.emit(
-                "discover:found",
-                FoundPayload {
-                    project: project.clone(),
-                },
-            );
+        DiscoverEvent::Progress(payload) => {
+            let _ = app.emit("discover:progress", payload);
         }
-
-        all_projects.extend(found_projects);
-
-        // Emit progress event.
-        let _ = app.emit(
-            "discover:progress",
-            ProgressPayload {
-                percent: percent.min(100),
-                current_path: root.path.clone(),
-                skills_found: total_skills,
-                projects_found: all_projects.len(),
-            },
-        );
-    }
-
-    // Persist discovered skills to the database.
-    let now = Utc::now().to_rfc3339();
-
-    // Collect all discovered skill IDs found in this scan for reconciliation.
-    let mut found_skill_ids: Vec<String> = Vec::new();
-
-    for project in &all_projects {
-        for skill in &project.skills {
-            found_skill_ids.push(skill.id.clone());
-
-            // Check if already persisted (by qualified ID).
-            let existing = db::get_discovered_skill_by_id(pool, &skill.id).await?;
-            if existing.is_none() {
-                db::insert_discovered_skill(
-                    pool,
-                    &skill.id,
-                    &skill.name,
-                    skill.description.as_deref(),
-                    &skill.file_path,
-                    &skill.dir_path,
-                    &skill.project_path,
-                    &skill.project_name,
-                    &skill.platform_id,
-                    &now,
-                )
-                .await?;
-            }
+        DiscoverEvent::Complete(payload) => {
+            let _ = app.emit("discover:complete", payload);
         }
-    }
-
-    // ── Cache reconciliation ──────────────────────────────────────────────────
-    // Remove stale discovered_skills rows whose dir_path no longer exists on disk
-    // within the scanned scope (scan roots). This ensures deleted project skills
-    // don't persist in cached results.
-    reconcile_discovered_skills(pool, &enabled_roots, &found_skill_ids).await?;
-
-    let total_projects = all_projects.len();
-
-    // Emit completion event.
-    let _ = app.emit(
-        "discover:complete",
-        CompletePayload {
-            total_projects,
-            total_skills,
-        },
-    );
-
-    Ok(DiscoverResult {
-        total_projects,
-        total_skills,
-        projects: all_projects,
     })
+    .await
 }
 
 /// Cancel an in-progress project scan.
@@ -596,12 +829,17 @@ pub async fn stop_project_scan() -> Result<(), String> {
 pub async fn get_discovered_skills(
     state: State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, String> {
-    let pool = &state.db;
+    let central_dir = central_skills_dir();
+    get_discovered_skills_impl(&state.db, &central_dir).await
+}
+
+async fn get_discovered_skills_impl(
+    pool: &DbPool,
+    central_dir: &Path,
+) -> Result<Vec<DiscoveredProject>, String> {
     let rows = db::get_all_discovered_skills(pool).await?;
 
     // Convert DB rows to DiscoveredSkill structs, adding is_already_central.
-    let central_dir = central_skills_dir();
-
     let skills: Vec<DiscoveredSkill> = rows
         .into_iter()
         .map(|row| {
@@ -623,12 +861,7 @@ pub async fn get_discovered_skills(
                 file_path: row.file_path,
                 dir_path: row.dir_path,
                 platform_id: platform_id.clone(),
-                // Look up display name from builtin agents.
-                platform_name: db::builtin_agents()
-                    .iter()
-                    .find(|a| a.id == platform_id)
-                    .map(|a| a.display_name.clone())
-                    .unwrap_or_else(|| platform_id),
+                platform_name: platform_display_name(&platform_id),
                 project_path: row.project_path,
                 project_name: row.project_name,
                 is_already_central,
@@ -742,15 +975,25 @@ pub async fn import_discovered_skill_to_platform(
     discovered_skill_id: String,
     agent_id: String,
 ) -> Result<ImportResult, String> {
-    let pool = &state.db;
+    import_discovered_skill_to_platform_from_pool(&state.db, &discovered_skill_id, &agent_id).await
+}
+
+async fn import_discovered_skill_to_platform_from_pool(
+    pool: &DbPool,
+    discovered_skill_id: &str,
+    agent_id: &str,
+) -> Result<ImportResult, String> {
+    if agent_id == OBSIDIAN_PLATFORM_ID {
+        return Err("Obsidian vaults are Discover sources, not install targets".to_string());
+    }
 
     // Look up the discovered skill.
-    let skill = db::get_discovered_skill_by_id(pool, &discovered_skill_id)
+    let skill = db::get_discovered_skill_by_id(pool, discovered_skill_id)
         .await?
         .ok_or_else(|| format!("Discovered skill '{}' not found", discovered_skill_id))?;
 
     // Look up the target agent.
-    let agent = db::get_agent_by_id(pool, &agent_id)
+    let agent = db::get_agent_by_id(pool, agent_id)
         .await?
         .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
 
@@ -805,7 +1048,7 @@ pub async fn import_discovered_skill_to_platform(
 
     let installation = db::SkillInstallation {
         skill_id: skill_dir_name.clone(),
-        agent_id: agent_id.clone(),
+        agent_id: agent_id.to_string(),
         installed_path: target_path.to_string_lossy().into_owned(),
         link_type: "symlink".to_string(),
         symlink_target: Some(skill.dir_path.clone()),
@@ -821,7 +1064,7 @@ pub async fn import_discovered_skill_to_platform(
 
     Ok(ImportResult {
         skill_id: skill_dir_name,
-        target: agent_id,
+        target: agent_id.to_string(),
     })
 }
 
@@ -880,6 +1123,97 @@ mod tests {
 
     use sqlx::SqlitePool;
 
+    fn valid_skill_md(name: &str, description: &str) -> String {
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n\n# {}\n",
+            name, description, name
+        )
+    }
+
+    fn create_skill(parent: &Path, dir_name: &str, name: &str, description: &str) -> PathBuf {
+        let skill_dir = parent.join(dir_name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            valid_skill_md(name, description),
+        )
+        .unwrap();
+        skill_dir
+    }
+
+    fn create_invalid_skill(parent: &Path, dir_name: &str) -> PathBuf {
+        let skill_dir = parent.join(dir_name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Missing name\n---\n\n# Invalid\n",
+        )
+        .unwrap();
+        skill_dir
+    }
+
+    fn basic_patterns() -> Vec<(String, String, PathBuf)> {
+        vec![
+            (
+                "codex".to_string(),
+                "Codex CLI".to_string(),
+                PathBuf::from(".agents/skills"),
+            ),
+            (
+                "claude-code".to_string(),
+                "Claude Code".to_string(),
+                PathBuf::from(".claude/skills"),
+            ),
+        ]
+    }
+
+    fn scan_for_test(root: &Path, central_dir: &Path) -> Vec<DiscoveredProject> {
+        scan_root_for_projects(root, &basic_patterns(), central_dir)
+    }
+
+    fn scan_root(path: &Path, enabled: bool, exists: bool) -> ScanRoot {
+        ScanRoot {
+            path: path.to_string_lossy().into_owned(),
+            label: "test".to_string(),
+            exists,
+            enabled,
+        }
+    }
+
+    fn vault_manifest(root: &Path) -> Vec<(String, bool, bool, Option<Vec<u8>>)> {
+        fn walk(root: &Path, current: &Path, out: &mut Vec<(String, bool, bool, Option<Vec<u8>>)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(current)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            entries.sort();
+
+            for path in entries {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let is_symlink = metadata.file_type().is_symlink();
+                let is_dir = metadata.is_dir();
+                let content = if metadata.is_file() {
+                    Some(std::fs::read(&path).unwrap())
+                } else {
+                    None
+                };
+                out.push((rel, is_dir, is_symlink, content));
+                if is_dir && !is_symlink {
+                    walk(root, &path, out);
+                }
+            }
+        }
+
+        let mut manifest = Vec::new();
+        walk(root, root, &mut manifest);
+        manifest
+    }
+
     #[tokio::test]
     async fn test_scan_root_for_projects_finds_nested_skills() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -910,6 +1244,295 @@ mod tests {
         assert_eq!(projects[0].skills.len(), 1);
         assert_eq!(projects[0].skills[0].platform_id, "claude-code");
         assert_eq!(projects[0].skills[0].name, "deploy");
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_exact_vault_root_discovers_vault_skills() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let skill_dir = vault_dir.join(".agents/skills/research-helper");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Research Helper\ndescription: Vault skill\n---\n\n# Research Helper\n",
+        )
+        .unwrap();
+
+        let patterns = vec![(
+            "codex".to_string(),
+            "Codex CLI".to_string(),
+            PathBuf::from(".agents/skills"),
+        )];
+
+        let projects = scan_root_for_projects(&vault_dir, &patterns, &central_dir);
+
+        assert_eq!(projects.len(), 1, "exact vault root should be scanned");
+        assert_eq!(projects[0].project_path, vault_dir.to_string_lossy());
+        assert_eq!(projects[0].project_name, "vault");
+        assert_eq!(projects[0].skills.len(), 1);
+        assert_eq!(projects[0].skills[0].platform_id, "obsidian");
+        assert_eq!(projects[0].skills[0].platform_name, "Obsidian");
+        assert_eq!(projects[0].skills[0].name, "Research Helper");
+    }
+
+    #[tokio::test]
+    async fn test_get_scan_roots_merges_obsidian_icloud_and_custom_roots() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let icloud_root = home
+            .join("Library")
+            .join("Mobile Documents")
+            .join("iCloud~md~obsidian")
+            .join("Documents");
+        let custom_active = tmp.path().join("custom-active-vault");
+        let custom_inactive = tmp.path().join("custom-inactive-vault");
+        std::fs::create_dir_all(&icloud_root).unwrap();
+        std::fs::create_dir_all(&custom_active).unwrap();
+        std::fs::create_dir_all(&custom_inactive).unwrap();
+
+        let pool = setup_test_db().await;
+        db::add_scan_directory(
+            &pool,
+            &custom_active.to_string_lossy(),
+            Some("Custom Active"),
+        )
+        .await
+        .unwrap();
+        db::add_scan_directory(&pool, &custom_inactive.to_string_lossy(), None)
+            .await
+            .unwrap();
+        db::toggle_scan_directory(&pool, &custom_inactive.to_string_lossy(), false)
+            .await
+            .unwrap();
+        db::add_scan_directory(
+            &pool,
+            &icloud_root.to_string_lossy(),
+            Some("Duplicate iCloud"),
+        )
+        .await
+        .unwrap();
+
+        let mut config = HashMap::new();
+        config.insert(icloud_root.to_string_lossy().to_string(), false);
+        db::set_setting(
+            &pool,
+            "discover_scan_roots_config",
+            &serde_json::to_string(&config).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let roots = build_scan_roots(&pool, default_scan_roots_for_home(&home))
+            .await
+            .unwrap();
+
+        let icloud_matches: Vec<_> = roots
+            .iter()
+            .filter(|root| root.path == icloud_root.to_string_lossy())
+            .collect();
+        assert_eq!(
+            icloud_matches.len(),
+            1,
+            "default iCloud root and custom duplicate should collapse"
+        );
+        assert_eq!(icloud_matches[0].label, "Obsidian iCloud");
+        assert!(icloud_matches[0].exists);
+        assert!(
+            !icloud_matches[0].enabled,
+            "persisted Discover override should apply to merged default root"
+        );
+
+        let active = roots
+            .iter()
+            .find(|root| root.path == custom_active.to_string_lossy())
+            .expect("custom active root should be merged");
+        assert_eq!(active.label, "Custom Active");
+        assert!(active.exists);
+        assert!(active.enabled);
+
+        let inactive = roots
+            .iter()
+            .find(|root| root.path == custom_inactive.to_string_lossy())
+            .expect("custom inactive root should be merged");
+        assert_eq!(inactive.label, "custom-inactive-vault");
+        assert!(inactive.exists);
+        assert!(!inactive.enabled);
+
+        assert!(
+            roots
+                .iter()
+                .all(|root| !root.path.ends_with(".claude/skills")),
+            "built-in agent scan directory rows must not be merged into Discover roots"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_parent_scan_supported_locations_and_marker_requirement() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("marked-vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        create_skill(
+            &vault_dir.join(".skills"),
+            "native-skill",
+            "Native Skill",
+            "From .skills",
+        );
+        create_skill(
+            &vault_dir.join(".agents/skills"),
+            "agents-skill",
+            "Agents Skill",
+            "From .agents",
+        );
+        create_skill(
+            &vault_dir.join(".claude/skills"),
+            "claude-skill",
+            "Claude Skill",
+            "From .claude",
+        );
+
+        let ordinary_dir = tmp.path().join("ordinary-project");
+        create_skill(
+            &ordinary_dir.join(".agents/skills"),
+            "ordinary-skill",
+            "Ordinary Skill",
+            "No vault marker",
+        );
+
+        let mut projects = scan_for_test(tmp.path(), &central_dir);
+        projects.sort_by(|a, b| a.project_name.cmp(&b.project_name));
+
+        let vault = projects
+            .iter()
+            .find(|project| project.project_path == vault_dir.to_string_lossy())
+            .expect("marked vault should be discovered as its own project");
+        assert_eq!(vault.skills.len(), 3);
+        assert!(vault
+            .skills
+            .iter()
+            .all(|skill| skill.platform_id == OBSIDIAN_PLATFORM_ID
+                && skill.platform_name == OBSIDIAN_PLATFORM_NAME));
+        let selected_dirs: Vec<String> = vault
+            .skills
+            .iter()
+            .map(|skill| selected_skill_dir_name(&skill.dir_path))
+            .collect();
+        assert!(selected_dirs.contains(&"native-skill".to_string()));
+        assert!(selected_dirs.contains(&"agents-skill".to_string()));
+        assert!(selected_dirs.contains(&"claude-skill".to_string()));
+
+        let ordinary = projects
+            .iter()
+            .find(|project| project.project_path == ordinary_dir.to_string_lossy())
+            .expect("unmarked project should retain ordinary Discover behavior");
+        assert_eq!(ordinary.skills.len(), 1);
+        assert_eq!(ordinary.skills[0].platform_id, "codex");
+        assert_ne!(ordinary.skills[0].platform_id, OBSIDIAN_PLATFORM_ID);
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_duplicate_priority_and_invalid_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+        let vault_dir = tmp.path().join("vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+
+        create_skill(
+            &vault_dir.join(".skills"),
+            "shared",
+            "Shared Native",
+            "native",
+        );
+        create_skill(
+            &vault_dir.join(".agents/skills"),
+            "shared",
+            "Shared Agents",
+            "agents",
+        );
+        create_skill(
+            &vault_dir.join(".claude/skills"),
+            "shared",
+            "Shared Claude",
+            "claude",
+        );
+
+        let projects = scan_for_test(&vault_dir, &central_dir);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].skills.len(), 1);
+        assert!(
+            projects[0].skills[0].dir_path.contains(".skills/shared"),
+            ".skills should win over lower-priority duplicates"
+        );
+
+        std::fs::remove_dir_all(vault_dir.join(".skills/shared")).unwrap();
+        let projects = scan_for_test(&vault_dir, &central_dir);
+        assert_eq!(projects[0].skills.len(), 1);
+        assert!(
+            projects[0].skills[0]
+                .dir_path
+                .contains(".agents/skills/shared"),
+            ".agents/skills should win when .skills is absent"
+        );
+
+        std::fs::remove_dir_all(vault_dir.join(".agents/skills/shared")).unwrap();
+        create_invalid_skill(&vault_dir.join(".agents/skills"), "shared");
+        let projects = scan_for_test(&vault_dir, &central_dir);
+        assert_eq!(projects[0].skills.len(), 1);
+        assert!(
+            projects[0].skills[0]
+                .dir_path
+                .contains(".claude/skills/shared"),
+            "invalid higher-priority duplicate must fall back to valid lower-priority source"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_dedupe_is_scoped_by_full_vault_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_a = tmp.path().join("team-a").join("same-name");
+        let vault_b = tmp.path().join("team-b").join("same-name");
+        for vault in [&vault_a, &vault_b] {
+            std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+            create_skill(
+                &vault.join(".skills"),
+                "shared-id",
+                "Shared",
+                "same skill id in different vaults",
+            );
+        }
+
+        let projects = scan_for_test(tmp.path(), &central_dir);
+        let vault_projects: Vec<_> = projects
+            .iter()
+            .filter(|project| project.project_name == "same-name")
+            .collect();
+        assert_eq!(vault_projects.len(), 2);
+
+        let ids: std::collections::HashSet<_> = vault_projects
+            .iter()
+            .map(|project| project.skills[0].id.as_str())
+            .collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "same basename and skill id in different vaults must remain distinct"
+        );
+        assert!(vault_projects
+            .iter()
+            .any(|project| project.project_path == vault_a.to_string_lossy()));
+        assert!(vault_projects
+            .iter()
+            .any(|project| project.project_path == vault_b.to_string_lossy()));
     }
 
     #[tokio::test]
@@ -1387,6 +2010,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_discovered_skills_recomputes_obsidian_central_status() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        let vault_dir = tmp.path().join("vault");
+        let skill_dir = create_skill(
+            &vault_dir.join(".skills"),
+            "cached-skill",
+            "Cached Skill",
+            "from cache",
+        );
+        std::fs::create_dir_all(central_dir.join("cached-skill")).unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            &pool,
+            "obsidian__fixture__cached-skill",
+            "Cached Skill",
+            Some("from cache"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &vault_dir.to_string_lossy(),
+            "vault",
+            OBSIDIAN_PLATFORM_ID,
+            &now,
+        )
+        .await
+        .unwrap();
+
+        let projects = get_discovered_skills_impl(&pool, &central_dir)
+            .await
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].skills.len(), 1);
+        assert_eq!(projects[0].skills[0].platform_id, OBSIDIAN_PLATFORM_ID);
+        assert_eq!(projects[0].skills[0].platform_name, OBSIDIAN_PLATFORM_NAME);
+        assert!(
+            projects[0].skills[0].is_already_central,
+            "cached Obsidian row should recompute central status from selected dir name"
+        );
+
+        std::fs::remove_dir_all(central_dir.join("cached-skill")).unwrap();
+        let projects = get_discovered_skills_impl(&pool, &central_dir)
+            .await
+            .unwrap();
+        assert!(
+            !projects[0].skills[0].is_already_central,
+            "central status should not be a stale cached snapshot"
+        );
+    }
+
+    #[tokio::test]
     async fn test_clear_discovered_skills_removes_all() {
         let pool = setup_test_db().await;
         let now = Utc::now().to_rfc3339();
@@ -1589,11 +2264,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_discovered_skill_is_idempotent() {
+    async fn test_insert_discovered_skill_upserts_metadata() {
         let pool = setup_test_db().await;
         let now = Utc::now().to_rfc3339();
 
-        // INSERT OR IGNORE should not fail on duplicate.
         db::insert_discovered_skill(
             &pool,
             "dup-id",
@@ -1609,14 +2283,13 @@ mod tests {
         .await
         .unwrap();
 
-        // Second insert with same ID should be silently ignored.
         db::insert_discovered_skill(
             &pool,
             "dup-id",
             "dup-skill-updated",
             Some("updated description"),
-            "/tmp/dup/SKILL.md",
-            "/tmp/dup",
+            "/tmp/dup-new/SKILL.md",
+            "/tmp/dup-new",
             "/tmp/proj",
             "proj",
             "claude-code",
@@ -1627,10 +2300,9 @@ mod tests {
 
         let rows = db::get_all_discovered_skills(&pool).await.unwrap();
         assert_eq!(rows.len(), 1, "should still have only 1 row");
-        assert_eq!(
-            rows[0].name, "dup-skill",
-            "original name should be preserved (INSERT OR IGNORE)"
-        );
+        assert_eq!(rows[0].name, "dup-skill-updated");
+        assert_eq!(rows[0].description.as_deref(), Some("updated description"));
+        assert_eq!(rows[0].dir_path, "/tmp/dup-new");
     }
 
     #[tokio::test]
@@ -2259,5 +2931,319 @@ mod tests {
             record.is_some(),
             "discovered record should be kept after platform installs"
         );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_start_scan_persists_updates_and_reconciles_marker_removal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let lower_priority = create_skill(
+            &vault_dir.join(".agents/skills"),
+            "changing-skill",
+            "Changing Skill",
+            "old description",
+        );
+
+        let roots = vec![scan_root(tmp.path(), true, true)];
+        let first = start_project_scan_impl(&pool, roots.clone(), &central_dir, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(first.total_projects, 1);
+        assert_eq!(first.total_skills, 1);
+        let discovered_id = first.projects[0].skills[0].id.clone();
+
+        let row = db::get_discovered_skill_by_id(&pool, &discovered_id)
+            .await
+            .unwrap()
+            .expect("first scan should persist Obsidian row");
+        assert_eq!(row.description.as_deref(), Some("old description"));
+        assert_eq!(row.platform_id, OBSIDIAN_PLATFORM_ID);
+        assert_eq!(row.dir_path, lower_priority.to_string_lossy());
+
+        let higher_priority = create_skill(
+            &vault_dir.join(".skills"),
+            "changing-skill",
+            "Changing Skill",
+            "new description",
+        );
+        let second = start_project_scan_impl(&pool, roots.clone(), &central_dir, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(second.total_projects, 1);
+        assert_eq!(second.total_skills, 1);
+        assert_eq!(
+            second.projects[0].skills[0].id, discovered_id,
+            "dedupe identity should stay stable when selected source changes"
+        );
+
+        let updated = db::get_discovered_skill_by_id(&pool, &discovered_id)
+            .await
+            .unwrap()
+            .expect("row should still exist after selected source update");
+        assert_eq!(updated.description.as_deref(), Some("new description"));
+        assert_eq!(updated.dir_path, higher_priority.to_string_lossy());
+
+        std::fs::remove_dir_all(vault_dir.join(".obsidian")).unwrap();
+        let third = start_project_scan_impl(&pool, roots, &central_dir, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(third.total_projects, 1);
+        assert_eq!(
+            third.projects[0].skills[0].platform_id, "codex",
+            "after marker removal the remaining .agents/skills directory is ordinary Discover data"
+        );
+        let stale = db::get_discovered_skill_by_id(&pool, &discovered_id)
+            .await
+            .unwrap();
+        assert!(
+            stale.is_none(),
+            "stale platform_id=obsidian row should be removed after marker removal"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_scan_is_read_only_and_does_not_create_managed_state() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("readonly-vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        create_skill(
+            &vault_dir.join(".claude/skills"),
+            "readonly-skill",
+            "Readonly Skill",
+            "must not mutate vault",
+        );
+        let before_manifest = vault_manifest(&vault_dir);
+
+        let skills_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skills")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let installs_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skill_installations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let agents_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let result = start_project_scan_impl(
+            &pool,
+            vec![scan_root(&vault_dir, true, true)],
+            &central_dir,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.total_projects, 1);
+        assert_eq!(result.total_skills, 1);
+
+        let after_manifest = vault_manifest(&vault_dir);
+        assert_eq!(
+            before_manifest, after_manifest,
+            "Discover scan must not create, remove, rewrite, or relink vault files"
+        );
+
+        let skills_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skills")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let installs_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skill_installations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let agents_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(skills_after, skills_before);
+        assert_eq!(installs_after, installs_before);
+        assert_eq!(agents_after, agents_before);
+        assert!(
+            db::get_agent_by_id(&pool, OBSIDIAN_PLATFORM_ID)
+                .await
+                .unwrap()
+                .is_none(),
+            "Obsidian must not be seeded as an agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_disabled_or_missing_roots_do_not_scan_or_reconcile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let disabled_vault = tmp.path().join("disabled-vault");
+        std::fs::create_dir_all(disabled_vault.join(".obsidian")).unwrap();
+        let skill_dir = create_skill(
+            &disabled_vault.join(".skills"),
+            "disabled-skill",
+            "Disabled Skill",
+            "not scanned",
+        );
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            &pool,
+            "preexisting-disabled",
+            "Disabled Skill",
+            Some("cached"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &disabled_vault.to_string_lossy(),
+            "disabled-vault",
+            OBSIDIAN_PLATFORM_ID,
+            &now,
+        )
+        .await
+        .unwrap();
+        std::fs::remove_dir_all(&skill_dir).unwrap();
+
+        let result = start_project_scan_impl(
+            &pool,
+            vec![
+                scan_root(&disabled_vault, false, true),
+                scan_root(&tmp.path().join("missing"), true, false),
+            ],
+            &central_dir,
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.total_projects, 0);
+        assert_eq!(result.total_skills, 0);
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "preexisting-disabled")
+                .await
+                .unwrap()
+                .is_some(),
+            "disabled roots must not scan or reconcile cached rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_import_platform_target_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let skill_dir = create_skill(
+            &tmp.path().join("vault/.skills"),
+            "portable-skill",
+            "Portable Skill",
+            "source only",
+        );
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            &pool,
+            "obsidian__fixture__portable-skill",
+            "Portable Skill",
+            Some("source only"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("vault").to_string_lossy(),
+            "vault",
+            OBSIDIAN_PLATFORM_ID,
+            &now,
+        )
+        .await
+        .unwrap();
+
+        let result = import_discovered_skill_to_platform_from_pool(
+            &pool,
+            "obsidian__fixture__portable-skill",
+            OBSIDIAN_PLATFORM_ID,
+        )
+        .await;
+        assert!(result.is_err(), "Obsidian is not an install target");
+
+        let skills: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skills")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let installs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM skill_installations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(skills.0, 0);
+        assert_eq!(installs.0, 0);
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_streaming_events_use_deduped_totals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let vault_dir = tmp.path().join("vault");
+        std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
+        create_invalid_skill(&vault_dir.join(".skills"), "deduped");
+        create_skill(
+            &vault_dir.join(".agents/skills"),
+            "deduped",
+            "Deduped Skill",
+            "valid fallback",
+        );
+        create_skill(
+            &vault_dir.join(".claude/skills"),
+            "deduped",
+            "Deduped Skill",
+            "lower duplicate",
+        );
+
+        let empty_vault = tmp.path().join("empty-vault");
+        std::fs::create_dir_all(empty_vault.join(".obsidian")).unwrap();
+
+        let mut events = Vec::new();
+        let result = start_project_scan_impl(
+            &pool,
+            vec![
+                scan_root(tmp.path(), true, true),
+                scan_root(&vault_dir, true, true),
+            ],
+            &central_dir,
+            |event| events.push(event),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.total_projects, 1);
+        assert_eq!(result.total_skills, 1);
+        let found_count = events
+            .iter()
+            .filter(|event| matches!(event, DiscoverEvent::Found(_)))
+            .count();
+        assert_eq!(
+            found_count, 1,
+            "overlapping roots should emit one found event"
+        );
+
+        let complete = events
+            .iter()
+            .find_map(|event| match event {
+                DiscoverEvent::Complete(payload) => Some(payload),
+                _ => None,
+            })
+            .expect("complete event should be emitted");
+        assert_eq!(complete.total_projects, 1);
+        assert_eq!(complete.total_skills, 1);
+
+        let last_progress = events.iter().rev().find_map(|event| match event {
+            DiscoverEvent::Progress(payload) => Some(payload),
+            _ => None,
+        });
+        let last_progress = last_progress.expect("progress event should be emitted");
+        assert_eq!(last_progress.projects_found, 1);
+        assert_eq!(last_progress.skills_found, 1);
     }
 }

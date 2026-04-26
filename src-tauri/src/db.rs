@@ -1690,7 +1690,7 @@ pub struct DiscoveredSkillRow {
     pub discovered_at: String,
 }
 
-/// Insert a discovered skill record.
+/// Insert or update a discovered skill record.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_discovered_skill(
     pool: &DbPool,
@@ -1705,9 +1705,18 @@ pub async fn insert_discovered_skill(
     discovered_at: &str,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT OR IGNORE INTO discovered_skills
+        "INSERT INTO discovered_skills
          (id, name, description, file_path, dir_path, project_path, project_name, platform_id, discovered_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name          = excluded.name,
+           description   = excluded.description,
+           file_path     = excluded.file_path,
+           dir_path      = excluded.dir_path,
+           project_path  = excluded.project_path,
+           project_name  = excluded.project_name,
+           platform_id   = excluded.platform_id,
+           discovered_at = excluded.discovered_at",
     )
     .bind(id)
     .bind(name)
