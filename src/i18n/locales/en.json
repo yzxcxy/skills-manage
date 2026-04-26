@@ -39,6 +39,8 @@
     "rescan": "Re-scan...",
     "categoryLobster": "Lobster",
     "categoryCoding": "Coding",
+    "categoryObsidian": "Obsidian",
+    "obsidianVaultLabel": "Obsidian vault {{name}} — {{count}} skills — {{path}}",
     "showAllPlatforms": "Show all platforms",
     "hideEmptyPlatforms": "Hide empty platforms"
   },

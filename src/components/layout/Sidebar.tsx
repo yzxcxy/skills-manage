@@ -17,11 +17,90 @@ import { usePlatformStore } from "@/stores/platformStore";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { cn } from "@/lib/utils";
+import type { DiscoveredProject } from "@/types";
+
+const OBSIDIAN_PLATFORM_ID = "obsidian";
+
+interface ObsidianVaultRow {
+  projectPath: string;
+  projectName: string;
+  count: number;
+}
+
+function getProjectDisplayName(project: DiscoveredProject): string {
+  if (project.project_name) {
+    return project.project_name;
+  }
+
+  const pathSegments = project.project_path.split(/[\\/]/).filter(Boolean);
+  return pathSegments.at(-1) ?? project.project_path;
+}
+
+function getSkillDedupeKey(skill: DiscoveredProject["skills"][number]): string {
+  return skill.id || skill.dir_path || skill.file_path;
+}
+
+function getObsidianVaultRows(projects: DiscoveredProject[]): ObsidianVaultRow[] {
+  const rowsByPath = new Map<string, { projectName: string; skillIds: Set<string> }>();
+
+  for (const project of projects) {
+    for (const skill of project.skills) {
+      if (skill.platform_id !== OBSIDIAN_PLATFORM_ID) {
+        continue;
+      }
+
+      const existing = rowsByPath.get(project.project_path);
+      if (existing) {
+        existing.skillIds.add(getSkillDedupeKey(skill));
+      } else {
+        rowsByPath.set(project.project_path, {
+          projectName: getProjectDisplayName(project),
+          skillIds: new Set([getSkillDedupeKey(skill)]),
+        });
+      }
+    }
+  }
+
+  return Array.from(rowsByPath.entries())
+    .map(([projectPath, value]) => ({
+      projectPath,
+      projectName: value.projectName,
+      count: value.skillIds.size,
+    }))
+    .filter((row) => row.count > 0)
+    .sort((a, b) => {
+      const byName = a.projectName.localeCompare(b.projectName);
+      if (byName !== 0) {
+        return byName;
+      }
+      return a.projectPath.localeCompare(b.projectPath);
+    });
+}
+
+function getActiveDiscoverProjectPath(pathname: string): string | null {
+  const discoverProjectPrefix = "/discover/";
+  if (!pathname.startsWith(discoverProjectPrefix)) {
+    return null;
+  }
+
+  const encodedProjectPath = pathname.slice(discoverProjectPrefix.length);
+  if (!encodedProjectPath) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(encodedProjectPath);
+  } catch {
+    return encodedProjectPath;
+  }
+}
 
 // ─── Nav Item ────────────────────────────────────────────────────────────────
 
 function NavItem({
   label,
+  ariaLabel,
+  title,
   isActive,
   onClick,
   icon,
@@ -29,6 +108,8 @@ function NavItem({
   count,
 }: {
   label: string;
+  ariaLabel?: string;
+  title?: string;
   isActive: boolean;
   onClick: () => void;
   icon: React.ReactNode;
@@ -39,8 +120,9 @@ function NavItem({
     <div className="relative">
       <button
         onClick={onClick}
-        title={label}
-        aria-label={label}
+        title={title ?? label}
+        aria-label={ariaLabel ?? label}
+        aria-current={isActive ? "page" : undefined}
         className={cn(
           "flex items-center w-full rounded-md transition-colors cursor-pointer",
           !isActive && "hover:bg-primary/15 hover:text-primary",
@@ -88,6 +170,7 @@ export function Sidebar() {
   const loadCollections = useCollectionStore((s) => s.loadCollections);
 
   const totalDiscovered = useDiscoverStore((s) => s.totalSkillsFound);
+  const discoveredProjects = useDiscoverStore((s) => s.discoveredProjects);
   const loadDiscoveredSkills = useDiscoverStore((s) => s.loadDiscoveredSkills);
 
   const [expanded, setExpanded] = useState(true);
@@ -124,6 +207,8 @@ export function Sidebar() {
   );
   const lobsterAgents = platformAgents.filter((a) => a.category === "lobster");
   const codingAgents = platformAgents.filter((a) => a.category !== "lobster");
+  const obsidianVaultRows = getObsidianVaultRows(discoveredProjects);
+  const activeDiscoverProjectPath = getActiveDiscoverProjectPath(pathname);
 
   const isCollectionActive = pathname === "/collections";
 
@@ -223,6 +308,39 @@ export function Sidebar() {
           </div>
         ) : (
           <>
+            {/* Obsidian vaults */}
+            {obsidianVaultRows.length > 0 && (
+              <>
+                {expanded ? (
+                  <div className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider px-2.5 pt-2 pb-1">
+                    {t("sidebar.categoryObsidian")}
+                  </div>
+                ) : (
+                  <div className="border-t border-sidebar-border/40 my-1.5" />
+                )}
+                {obsidianVaultRows.map((vault) => {
+                  const vaultAccessibleLabel = t("sidebar.obsidianVaultLabel", {
+                    name: vault.projectName,
+                    count: vault.count,
+                    path: vault.projectPath,
+                  });
+                  return (
+                    <NavItem
+                      key={vault.projectPath}
+                      label={vault.projectName}
+                      ariaLabel={vaultAccessibleLabel}
+                      title={vaultAccessibleLabel}
+                      isActive={activeDiscoverProjectPath === vault.projectPath}
+                      onClick={() => navigate(`/discover/${encodeURIComponent(vault.projectPath)}`)}
+                      icon={<PlatformIcon agentId={OBSIDIAN_PLATFORM_ID} className="size-4" />}
+                      expanded={expanded}
+                      count={vault.count}
+                    />
+                  );
+                })}
+              </>
+            )}
+
             {/* Lobster agents */}
             {lobsterAgents.length > 0 && (
               <>

@@ -39,6 +39,8 @@
     "rescan": "重新扫描...",
     "categoryLobster": "龙虾类",
     "categoryCoding": "编程类",
+    "categoryObsidian": "Obsidian",
+    "obsidianVaultLabel": "Obsidian 仓库 {{name}} — {{count}} 个技能 — {{path}}",
     "showAllPlatforms": "显示所有平台",
     "hideEmptyPlatforms": "隐藏空平台"
   },

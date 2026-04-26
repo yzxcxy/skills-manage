@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { render, screen, fireEvent, within } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/layout/Sidebar";
 import { usePlatformStore } from "../stores/platformStore";
+import type { DiscoveredProject, DiscoveredSkill } from "../types";
 
 // Mock the platformStore to avoid real Tauri invocations
 vi.mock("../stores/platformStore", () => ({
@@ -67,6 +68,10 @@ const defaultStoreState = {
   refreshCounts: vi.fn(),
 };
 
+type SidebarPlatformState = Omit<typeof defaultStoreState, "skillsByAgent"> & {
+  skillsByAgent: Record<string, number>;
+};
+
 const defaultCollectionState = {
   collections: [],
   currentDetail: null,
@@ -92,15 +97,65 @@ const defaultDiscoverState = {
   loadDiscoveredSkills: vi.fn(),
 };
 
-function renderSidebar(initialPath = "/central") {
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-path">{location.pathname}</div>;
+}
+
+function createDiscoveredSkill(
+  overrides: Partial<DiscoveredSkill> & Pick<DiscoveredSkill, "id" | "project_path" | "project_name">
+): DiscoveredSkill {
+  const platformId = overrides.platform_id ?? "obsidian";
+  const platformName = overrides.platform_name ?? "Obsidian";
+  const dirPath = overrides.dir_path ?? `${overrides.project_path}/.agents/skills/${overrides.id}`;
+  return {
+    name: overrides.name ?? overrides.id,
+    description: overrides.description,
+    file_path: overrides.file_path ?? `${dirPath}/SKILL.md`,
+    dir_path: dirPath,
+    is_already_central: overrides.is_already_central ?? false,
+    ...overrides,
+    platform_id: platformId,
+    platform_name: platformName,
+  };
+}
+
+function createDiscoveredProject(
+  projectPath: string,
+  projectName: string,
+  skills: DiscoveredSkill[]
+): DiscoveredProject {
+  return {
+    project_path: projectPath,
+    project_name: projectName,
+    skills,
+  };
+}
+
+function renderSidebar(
+  initialPath = "/central",
+  options: {
+    discoverProjects?: DiscoveredProject[];
+    platformState?: SidebarPlatformState;
+  } = {}
+) {
+  const discoveredProjects = options.discoverProjects ?? defaultDiscoverState.discoveredProjects;
   vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
+  if (options.platformState) {
+    vi.mocked(usePlatformStore).mockReturnValue(options.platformState);
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.mocked(useDiscoverStore).mockImplementation((selector: any) =>
-    selector(defaultDiscoverState)
+    selector({
+      ...defaultDiscoverState,
+      discoveredProjects,
+      totalSkillsFound: discoveredProjects.reduce((sum, project) => sum + project.skills.length, 0),
+    })
   );
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
       <Sidebar />
+      <LocationProbe />
     </MemoryRouter>
   );
 }
@@ -112,6 +167,10 @@ describe("Sidebar", () => {
     // Default: collection store returns empty state.
     vi.mocked(useCollectionStore).mockImplementation((selector) =>
       selector(defaultCollectionState)
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(useDiscoverStore).mockImplementation((selector: any) =>
+      selector(defaultDiscoverState)
     );
   });
 
@@ -334,6 +393,206 @@ describe("Sidebar", () => {
   it("renders show all platforms toggle", () => {
     renderSidebar();
     expect(screen.getByRole("button", { name: "显示所有平台" })).toBeInTheDocument();
+  });
+
+  it("renders Obsidian as a separate category with one deduped row per populated vault", () => {
+    const alphaPath = "/vaults/Alpha";
+    const zetaPath = "/vaults/Zeta";
+    const ordinaryPath = "/workspace/app";
+    const discoverProjects = [
+      createDiscoveredProject(zetaPath, "Zeta", [
+        createDiscoveredSkill({ id: "daily-notes", project_path: zetaPath, project_name: "Zeta" }),
+        createDiscoveredSkill({ id: "daily-notes", project_path: zetaPath, project_name: "Zeta" }),
+      ]),
+      createDiscoveredProject(ordinaryPath, "App", [
+        createDiscoveredSkill({
+          id: "claude-local",
+          project_path: ordinaryPath,
+          project_name: "App",
+          platform_id: "claude-code",
+          platform_name: "Claude Code",
+        }),
+      ]),
+      createDiscoveredProject(alphaPath, "Alpha", [
+        createDiscoveredSkill({ id: "alpha-one", project_path: alphaPath, project_name: "Alpha" }),
+        createDiscoveredSkill({ id: "alpha-two", project_path: alphaPath, project_name: "Alpha" }),
+      ]),
+    ];
+
+    const { container } = renderSidebar("/central", { discoverProjects });
+
+    expect(screen.getByText("Obsidian")).toBeInTheDocument();
+    const alphaButton = screen.getByRole("button", { name: /Alpha/ });
+    const zetaButton = screen.getByRole("button", { name: /Zeta/ });
+    expect(within(alphaButton).getByText("2")).toBeInTheDocument();
+    expect(within(zetaButton).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /App/ })).not.toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("/platform/obsidian");
+  });
+
+  it("hides the Obsidian category when no vault projects contain Obsidian skills", () => {
+    const ordinaryPath = "/workspace/app";
+    renderSidebar("/central", {
+      discoverProjects: [
+        createDiscoveredProject(ordinaryPath, "App", [
+          createDiscoveredSkill({
+            id: "claude-local",
+            project_path: ordinaryPath,
+            project_name: "App",
+            platform_id: "claude-code",
+            platform_name: "Claude Code",
+          }),
+        ]),
+      ],
+    });
+
+    expect(screen.queryByText("Obsidian")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /App/ })).not.toBeInTheDocument();
+  });
+
+  it("navigates vault rows to the Discover route with exactly one encoded project path", () => {
+    const vaultPath =
+      "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make money 100% #notes?中文";
+    renderSidebar("/central", {
+      discoverProjects: [
+        createDiscoveredProject(vaultPath, "make money", [
+          createDiscoveredSkill({ id: "vault-skill", project_path: vaultPath, project_name: "make money" }),
+        ]),
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /make money/ }));
+
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      `/discover/${encodeURIComponent(vaultPath)}`
+    );
+  });
+
+  it("marks the active vault row by full path and keeps collapsed rows accessible", () => {
+    const activePath = "/vaults/current";
+    const otherPath = "/vaults/other";
+    renderSidebar(`/discover/${encodeURIComponent(activePath)}`, {
+      discoverProjects: [
+        createDiscoveredProject(activePath, "Current", [
+          createDiscoveredSkill({ id: "current-skill", project_path: activePath, project_name: "Current" }),
+        ]),
+        createDiscoveredProject(otherPath, "Other", [
+          createDiscoveredSkill({ id: "other-skill", project_path: otherPath, project_name: "Other" }),
+        ]),
+      ],
+    });
+
+    const activeButton = screen.getByRole("button", { name: /Current/ });
+    const otherButton = screen.getByRole("button", { name: /Other/ });
+    expect(activeButton).toHaveAttribute("aria-current", "page");
+    expect(otherButton).not.toHaveAttribute("aria-current");
+
+    fireEvent.click(screen.getByRole("button", { name: /折叠侧边栏/i }));
+    const collapsedVaultButton = screen.getByRole("button", { name: /Other/ });
+    expect(collapsedVaultButton).toHaveAttribute("title", expect.stringContaining(otherPath));
+    fireEvent.click(collapsedVaultButton);
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      `/discover/${encodeURIComponent(otherPath)}`
+    );
+  });
+
+  it("keeps populated Obsidian vault rows visible when show-all-platforms toggles normal agents", () => {
+    const vaultPath = "/vaults/toggle-proof";
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        skillsByAgent: {
+          "claude-code": 0,
+          cursor: 3,
+          central: 10,
+        },
+      },
+      discoverProjects: [
+        createDiscoveredProject(vaultPath, "Toggle Proof", [
+          createDiscoveredSkill({ id: "vault-skill", project_path: vaultPath, project_name: "Toggle Proof" }),
+        ]),
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: /Toggle Proof/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+
+    expect(screen.getByRole("button", { name: /Toggle Proof/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
+  });
+
+  it("disambiguates duplicate vault names by full path and highlights only the selected path", () => {
+    const firstPath = "/Users/alice/Documents/Notes";
+    const secondPath = "/Users/bob/Documents/Notes";
+    renderSidebar(`/discover/${encodeURIComponent(secondPath)}`, {
+      discoverProjects: [
+        createDiscoveredProject(firstPath, "Notes", [
+          createDiscoveredSkill({ id: "first-skill", project_path: firstPath, project_name: "Notes" }),
+        ]),
+        createDiscoveredProject(secondPath, "Notes", [
+          createDiscoveredSkill({ id: "second-skill", project_path: secondPath, project_name: "Notes" }),
+        ]),
+      ],
+    });
+
+    const noteButtons = screen.getAllByRole("button", { name: /Notes/ });
+    expect(noteButtons).toHaveLength(2);
+    expect(noteButtons[0]).toHaveAttribute("title", expect.stringContaining(firstPath));
+    expect(noteButtons[1]).toHaveAttribute("title", expect.stringContaining(secondPath));
+    expect(noteButtons[0]).not.toHaveAttribute("aria-current");
+    expect(noteButtons[1]).toHaveAttribute("aria-current", "page");
+
+    fireEvent.click(noteButtons[0]);
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      `/discover/${encodeURIComponent(firstPath)}`
+    );
+    fireEvent.click(noteButtons[1]);
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      `/discover/${encodeURIComponent(secondPath)}`
+    );
+  });
+
+  it("places the Obsidian section before ordinary platform categories and the show-all toggle", () => {
+    const vaultPath = "/vaults/ordered";
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        agents: [
+          ...mockAgents,
+          {
+            id: "openclaw",
+            display_name: "OpenClaw",
+            category: "lobster",
+            global_skills_dir: "~/.openclaw/skills/",
+            is_detected: true,
+            is_builtin: true,
+            is_enabled: true,
+          },
+        ],
+        skillsByAgent: {
+          ...defaultStoreState.skillsByAgent,
+          openclaw: 1,
+        } as Record<string, number>,
+      },
+      discoverProjects: [
+        createDiscoveredProject(vaultPath, "Ordered", [
+          createDiscoveredSkill({ id: "ordered-skill", project_path: vaultPath, project_name: "Ordered" }),
+        ]),
+      ],
+    });
+
+    const discoverButton = screen.getByRole("button", { name: "项目技能库" });
+    const obsidianHeading = screen.getByText("Obsidian");
+    const lobsterHeading = screen.getByText("龙虾类");
+    const codingHeading = screen.getByText("编程类");
+    const toggle = screen.getByRole("button", { name: "显示所有平台" });
+
+    expect(discoverButton.compareDocumentPosition(obsidianHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(obsidianHeading.compareDocumentPosition(lobsterHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(lobsterHeading.compareDocumentPosition(codingHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(codingHeading.compareDocumentPosition(toggle)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   // ── Collapse Toggle ───────────────────────────────────────────────────────
