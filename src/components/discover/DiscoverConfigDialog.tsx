@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -69,7 +70,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="min-w-0 overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Radar className="size-5" />
@@ -78,9 +79,9 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
           <DialogDescription>{t("discover.desc")}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <DialogBody className="min-w-0 space-y-4 overflow-x-hidden px-0 py-2">
           {/* Scan Roots */}
-          <div>
+          <div className="min-w-0 overflow-x-hidden">
             <h3 className="text-sm font-medium mb-2">{t("discover.scanRoots")}</h3>
             <p className="text-xs text-muted-foreground mb-2">
               {t("discover.scanRootsDesc")}
@@ -96,7 +97,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
                 No candidate directories found.
               </p>
             ) : (
-              <div className="space-y-2 max-h-48 overflow-y-auto">
+              <div className="max-h-48 space-y-2 overflow-y-auto overflow-x-hidden">
                 {scanRoots.map((root) => (
                   <ScanRootRow
                     key={root.path}
@@ -111,37 +112,39 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
           </div>
 
           {/* Platform Patterns */}
-          <div>
+          <div className="min-w-0 overflow-x-hidden">
             <h3 className="text-xs font-medium text-muted-foreground mb-1">
               {t("discover.lookingFor")}
             </h3>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-x-hidden">
               {platformPatterns.slice(0, 6).map((p) => (
                 <span
                   key={p.name}
-                  className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground font-mono"
+                  title={p.pattern}
+                  className="min-w-0 max-w-full break-all whitespace-normal text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground font-mono"
                 >
                   {p.pattern}
                 </span>
               ))}
               {platformPatterns.length > 6 && (
-                <span className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground">
+                <span className="min-w-0 max-w-full break-all whitespace-normal text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground">
                   +{platformPatterns.length - 6}
                 </span>
               )}
             </div>
-            <div className="mt-2 rounded-md bg-muted/40 px-2.5 py-2">
+            <div className="mt-2 min-w-0 overflow-x-hidden rounded-md bg-muted/40 px-2.5 py-2">
               <p className="text-xs font-medium text-foreground">
                 {t("discover.obsidianPatternsTitle")}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {t("discover.obsidianPatternsDesc")}
               </p>
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
+              <div className="flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-x-hidden mt-1.5">
                 {OBSIDIAN_VAULT_PATTERNS.map((pattern) => (
                   <span
                     key={pattern}
-                    className="text-xs px-2 py-0.5 rounded bg-background/70 text-muted-foreground font-mono ring-1 ring-border/60"
+                    title={pattern}
+                    className="min-w-0 max-w-full break-all whitespace-normal text-xs px-2 py-0.5 rounded bg-background/70 text-muted-foreground font-mono ring-1 ring-border/60"
                   >
                     {pattern}
                   </span>
@@ -157,7 +160,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
               <span>{t("discover.noRootsEnabled")}</span>
             </div>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -186,21 +189,25 @@ function ScanRootRow({
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-hover-bg/20 cursor-pointer">
+    <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded px-2 py-1.5 hover:bg-hover-bg/20 cursor-pointer">
       <Checkbox
         checked={root.enabled}
         onCheckedChange={(checked) => onToggle(!!checked)}
         disabled={!root.exists}
         aria-label={root.path}
       />
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1 overflow-hidden">
         <span
-          className={`text-sm font-mono truncate ${!root.exists ? "text-muted-foreground line-through" : ""}`}
+          title={root.path}
+          className={`block w-full truncate text-sm font-mono ${!root.exists ? "text-muted-foreground line-through" : ""}`}
         >
           {root.path}
         </span>
       </div>
-      <span className="text-xs text-muted-foreground shrink-0">
+      <span
+        title={root.label}
+        className="min-w-0 max-w-[38%] shrink truncate text-right text-xs text-muted-foreground"
+      >
         {root.label}
       </span>
     </div>

@@ -177,6 +177,62 @@ describe("DiscoverConfigDialog", () => {
     expect(screen.getByText(".claude/skills/<skill>/SKILL.md")).toBeInTheDocument();
   });
 
+  it("keeps long scan roots and Obsidian pattern chips constrained inside the dialog", () => {
+    const longICloudPath =
+      "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/very-long-segment/another-long-segment";
+    const longRootLabel =
+      "iCloud Obsidian Documents Root With A Very Long Label";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(useDiscoverStore).mockImplementation((selector: any) =>
+      selector(
+        buildDiscoverStoreState({
+          scanRoots: [
+            {
+              path: longICloudPath,
+              label: longRootLabel,
+              exists: true,
+              enabled: true,
+            },
+          ],
+        })
+      )
+    );
+
+    renderDialog();
+
+    const dialogContent = screen
+      .getByText("Discover Project Skills")
+      .closest("[data-slot='dialog-content']");
+    expect(dialogContent?.className).toEqual(expect.stringContaining("overflow-hidden"));
+
+    const pathText = screen.getByText(longICloudPath);
+    expect(pathText).toHaveAttribute("title", longICloudPath);
+    expect(pathText.className).toEqual(expect.stringContaining("block"));
+    expect(pathText.className).toEqual(expect.stringContaining("truncate"));
+    expect(screen.getByRole("checkbox", { name: longICloudPath })).toBeInTheDocument();
+
+    const row = pathText.closest("div")?.parentElement;
+    expect(row?.className).toEqual(expect.stringContaining("min-w-0"));
+    expect(row?.className).toEqual(expect.stringContaining("max-w-full"));
+    expect(row?.className).toEqual(expect.stringContaining("overflow-hidden"));
+
+    const label = screen.getByText(longRootLabel);
+    expect(label).toHaveAttribute("title", longRootLabel);
+    expect(label.className).toEqual(expect.stringContaining("truncate"));
+    expect(label.className).toEqual(expect.stringContaining("max-w-"));
+
+    for (const pattern of [
+      ".skills/<skill>/SKILL.md",
+      ".agents/skills/<skill>/SKILL.md",
+      ".claude/skills/<skill>/SKILL.md",
+    ]) {
+      const chip = screen.getByText(pattern);
+      expect(chip.className).toEqual(expect.stringContaining("max-w-full"));
+      expect(chip.className).toEqual(expect.stringContaining("break-all"));
+      expect(chip.className).toEqual(expect.stringContaining("whitespace-normal"));
+    }
+  });
+
   it("renders Cancel and Start Scan buttons", () => {
     renderDialog();
     expect(screen.getByText("Cancel")).toBeInTheDocument();
