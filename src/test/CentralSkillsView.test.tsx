@@ -76,6 +76,24 @@ const mockAgents: AgentWithStatus[] = [
     is_enabled: true,
   },
   {
+    id: "trae",
+    display_name: "Trae",
+    category: "coding",
+    global_skills_dir: "/Users/test/.trae/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "openclaw",
+    display_name: "OpenClaw",
+    category: "lobster",
+    global_skills_dir: "/Users/test/.openclaw/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
     id: "central",
     display_name: "Central Skills",
     category: "central",
@@ -116,6 +134,7 @@ const mockSkills: SkillWithLinks[] = [
 const mockLoadCentralSkills = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockTogglePlatformLink = vi.fn();
+const mockDeleteCentralSkill = vi.fn();
 const mockRescan = vi.fn();
 const mockGetSkillsByAgent = vi.fn();
 const mockPreviewGitHubRepoImport = vi.fn();
@@ -132,11 +151,13 @@ function buildCentralStoreState(overrides = {}) {
     agents: mockAgents,
     isLoading: false,
     isInstalling: false,
+    deletingSkillId: null,
     togglingAgentId: null,
     error: null,
     loadCentralSkills: mockLoadCentralSkills,
     installSkill: mockInstallSkill,
     togglePlatformLink: mockTogglePlatformLink,
+    deleteCentralSkill: mockDeleteCentralSkill,
     ...overrides,
   };
 }
@@ -304,6 +325,61 @@ describe("CentralSkillsView", () => {
     expect(installButtons).toHaveLength(2);
   });
 
+  it("deletes an unlinked central skill after inline confirmation", async () => {
+    mockDeleteCentralSkill.mockResolvedValue({
+      skillId: "code-reviewer",
+      removedCanonicalPath: "/Users/test/.agents/skills/code-reviewer",
+      uninstalledAgents: [],
+      skippedReadOnlyAgents: [],
+    });
+
+    renderCentralSkillsView();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从中央技能库删除 code-reviewer/i,
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /确认删除/i }));
+
+    await waitFor(() => {
+      expect(mockDeleteCentralSkill).toHaveBeenCalledWith("code-reviewer", {
+        cascadeUninstall: false,
+      });
+      expect(mockRescan).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("requires explicit cascade confirmation before deleting a linked central skill", async () => {
+    mockDeleteCentralSkill.mockResolvedValue({
+      skillId: "frontend-design",
+      removedCanonicalPath: "/Users/test/.agents/skills/frontend-design",
+      uninstalledAgents: ["claude-code"],
+      skippedReadOnlyAgents: [],
+    });
+
+    renderCentralSkillsView();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从中央技能库删除 frontend-design/i,
+      })
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: /删除 frontend-design/i })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Claude Code/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /同时卸载并删除/i }));
+
+    await waitFor(() => {
+      expect(mockDeleteCentralSkill).toHaveBeenCalledWith("frontend-design", {
+        cascadeUninstall: true,
+      });
+    });
+  });
+
   it("renders browser fixture skill card on the localhost validation surface without Tauri", async () => {
     const isTauriSpy = vi.spyOn(tauriBridge, "isTauriRuntime").mockReturnValue(false);
     mockUseCentralSkillsStore.mockRestore();
@@ -331,13 +407,55 @@ describe("CentralSkillsView", () => {
 
   // ── Per-platform link status ──────────────────────────────────────────────
 
-  it("shows platform toggle icons for each non-central agent", () => {
+  it("shows lobster toggles and featured coding toggles on central cards", () => {
     renderCentralSkillsView();
-    // Each skill card should have a toggle button for each non-central agent (2 agents x 2 skills = 4)
-    const toggleButtons = screen.getAllByRole("button", {
-      name: /切换 .* 的链接状态/i,
+
+    expect(screen.getAllByText("龙虾类").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("编程类").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByRole("button", { name: /管理 .* 的平台安装/i })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "切换 frontend-design 在 Claude Code 的链接状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design 在 Cursor 的链接状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design 在 OpenClaw 的链接状态" })).toBeInTheDocument();
+  });
+
+  it("toggles featured coding platforms directly from the card", async () => {
+    mockTogglePlatformLink.mockResolvedValue(undefined);
+    renderCentralSkillsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design 在 Cursor 的链接状态" }));
+
+    await waitFor(() => {
+      expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor");
+      expect(mockRescan).toHaveBeenCalledTimes(1);
     });
-    expect(toggleButtons.length).toBe(4);
+  });
+
+  it("opens the platform manager drawer and toggles a platform", async () => {
+    mockTogglePlatformLink.mockResolvedValue(undefined);
+    renderCentralSkillsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "管理 frontend-design 的平台安装" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: /管理 frontend-design 的平台安装/i })
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "编程类" }));
+    fireEvent.click(screen.getByRole("button", { name: "安装 frontend-design 到 Cursor" }));
+
+    await waitFor(() => {
+      expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor");
+      expect(mockRescan).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps the full install dialog available from the platform drawer", async () => {
+    renderCentralSkillsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "管理 frontend-design 的平台安装" }));
+    fireEvent.click(await screen.findByRole("button", { name: "打开完整安装面板" }));
+
+    expect(await screen.findByRole("dialog", { name: /安装 frontend-design/i })).toBeInTheDocument();
   });
 
   // ── Empty State ───────────────────────────────────────────────────────────

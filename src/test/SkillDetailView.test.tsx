@@ -425,7 +425,7 @@ describe("SkillDetailView", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("~/.claude/plugins/cache/publisher/frontend-design/unknown")).toBeInTheDocument();
     expect(
-      screen.getByText(/插件安装的副本仅供查看|display-only/i)
+      screen.getByText(/只读观测副本仅供查看|display-only/i)
     ).toBeInTheDocument();
     expect(
       screen.getByText(/不可安装或卸载|Install and uninstall are unavailable/i)
@@ -497,6 +497,49 @@ describe("SkillDetailView", () => {
       name: /切换 frontend-design 在 Claude Code 的链接状态/i,
     });
     expect(claudeToggle).toHaveAttribute("title", expect.stringContaining("Claude Code"));
+  });
+
+  it("marks installed platform icons as pressed and fully visible", () => {
+    renderView();
+
+    const claudeToggle = screen.getByRole("button", {
+      name: /切换 frontend-design 在 Claude Code 的链接状态/i,
+    });
+
+    expect(claudeToggle).toHaveAttribute("aria-pressed", "true");
+    expect(claudeToggle).toHaveClass("text-primary");
+    expect(claudeToggle.querySelector("svg")).toHaveClass("opacity-100", "grayscale-0");
+  });
+
+  it("dims uninstalled app icons with grayscale opacity", () => {
+    renderView();
+
+    const cursorToggle = screen.getByRole("button", {
+      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+    });
+
+    expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
+    expect(cursorToggle).toHaveClass("text-muted-foreground/40");
+    expect(cursorToggle.querySelector("img")).toHaveClass("opacity-40", "grayscale");
+  });
+
+  it("marks read-only universal platform icons as available but disabled", () => {
+    applyStoreMocks({
+      detail: {
+        ...mockDetail,
+        read_only_agents: ["cursor"],
+      },
+    });
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const cursorToggle = screen.getByRole("button", {
+      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+    });
+
+    expect(cursorToggle).toHaveAttribute("aria-pressed", "true");
+    expect(cursorToggle).toBeDisabled();
+    fireEvent.click(cursorToggle);
+    expect(mockInstallSkill).not.toHaveBeenCalled();
   });
 
   it("calls installSkill when unlinked platform icon is clicked", async () => {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -43,22 +43,41 @@ pub struct ScanResult {
     pub skills_by_agent: HashMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClaudeSourceKind {
-    User,
-    Plugin,
+#[derive(Debug, Clone, Copy)]
+pub struct ScanDirectoryOptions {
+    pub nested: bool,
+    pub max_depth: usize,
+    pub follow_symlinks: bool,
 }
 
-impl ClaudeSourceKind {
+impl ScanDirectoryOptions {
+    pub fn nested() -> Self {
+        Self {
+            nested: true,
+            max_depth: 4,
+            follow_symlinks: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentSkillSourceKind {
+    User,
+    Plugin,
+    Compatibility,
+}
+
+impl AgentSkillSourceKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Plugin => "plugin",
+            Self::Compatibility => "compatibility",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Plugin)
+        matches!(self, Self::Plugin | Self::Compatibility)
     }
 }
 
@@ -66,7 +85,7 @@ impl ClaudeSourceKind {
 struct AgentScanRoot {
     path: PathBuf,
     source_root: Option<PathBuf>,
-    claude_source: Option<ClaudeSourceKind>,
+    source_kind: Option<AgentSkillSourceKind>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -212,6 +231,161 @@ pub fn scan_directory(dir: &Path, is_central: bool) -> Vec<ScannedSkill> {
     skills
 }
 
+const NESTED_SCAN_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    ".git",
+    "build",
+    "dist",
+    ".cache",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+];
+
+fn should_skip_nested_scan_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| NESTED_SCAN_SKIP_DIRS.contains(&name))
+}
+
+fn scanned_skill_from_dir(entry_path: &Path, is_central: bool) -> Option<ScannedSkill> {
+    let skill_md_path = entry_path.join("SKILL.md");
+    if !skill_md_path.exists() {
+        return None;
+    }
+
+    let info = parse_skill_md(&skill_md_path)?;
+    let (link_type, symlink_target) = detect_link_type(entry_path, is_central);
+    let id = entry_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_lowercase().replace(' ', "-"))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(ScannedSkill {
+        id,
+        name: info.name,
+        description: info.description,
+        file_path: skill_md_path.to_string_lossy().into_owned(),
+        dir_path: entry_path.to_string_lossy().into_owned(),
+        link_type,
+        symlink_target,
+        is_central,
+    })
+}
+
+fn scan_skill_root_recursive(
+    current_dir: &Path,
+    is_central: bool,
+    options: ScanDirectoryOptions,
+    depth: usize,
+    visited_dirs: &mut HashSet<PathBuf>,
+    out: &mut Vec<(usize, ScannedSkill)>,
+) {
+    if depth > options.max_depth {
+        return;
+    }
+
+    let metadata = if options.follow_symlinks {
+        std::fs::metadata(current_dir)
+    } else {
+        std::fs::symlink_metadata(current_dir)
+    };
+    let Ok(metadata) = metadata else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+
+    if let Some(skill) = scanned_skill_from_dir(current_dir, is_central) {
+        out.push((depth, skill));
+        return;
+    }
+
+    if !options.nested || depth >= options.max_depth || should_skip_nested_scan_dir(current_dir) {
+        return;
+    }
+
+    if options.follow_symlinks {
+        if let Ok(canonical) = current_dir.canonicalize() {
+            if !visited_dirs.insert(canonical) {
+                return;
+            }
+        }
+    }
+
+    let entries = match std::fs::read_dir(current_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    let mut child_paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    child_paths.sort();
+
+    for child_path in child_paths {
+        scan_skill_root_recursive(
+            &child_path,
+            is_central,
+            options,
+            depth + 1,
+            visited_dirs,
+            out,
+        );
+    }
+}
+
+pub fn scan_skill_root(
+    dir: &Path,
+    is_central: bool,
+    options: ScanDirectoryOptions,
+) -> Vec<ScannedSkill> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut visited_dirs = HashSet::new();
+    if let Ok(canonical) = dir.canonicalize() {
+        visited_dirs.insert(canonical);
+    }
+
+    let mut child_paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    child_paths.sort();
+
+    let mut candidates = Vec::new();
+    for child_path in child_paths {
+        scan_skill_root_recursive(
+            &child_path,
+            is_central,
+            options,
+            1,
+            &mut visited_dirs,
+            &mut candidates,
+        );
+    }
+
+    let mut by_id: BTreeMap<String, (usize, String, ScannedSkill)> = BTreeMap::new();
+    for (depth, skill) in candidates {
+        let sort_path = skill.dir_path.clone();
+        match by_id.get(&skill.id) {
+            Some((existing_depth, existing_path, _))
+                if (*existing_depth, existing_path.as_str()) <= (depth, sort_path.as_str()) => {}
+            _ => {
+                by_id.insert(skill.id.clone(), (depth, sort_path, skill));
+            }
+        }
+    }
+
+    by_id.into_values().map(|(_, _, skill)| skill).collect()
+}
+
 fn read_json_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
@@ -302,7 +476,7 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
                 roots.push(AgentScanRoot {
                     path: scan_path,
                     source_root: Some(install_root.clone()),
-                    claude_source: Some(ClaudeSourceKind::Plugin),
+                    source_kind: Some(AgentSkillSourceKind::Plugin),
                 });
             }
         }
@@ -311,22 +485,68 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
     roots
 }
 
+fn agents_skills_compatibility_root(primary_root: &Path) -> Option<PathBuf> {
+    primary_root
+        .parent()
+        .and_then(Path::parent)
+        .map(|home_root| home_root.join(".agents/skills"))
+}
+
+fn compatibility_scan_root(path: PathBuf) -> AgentScanRoot {
+    AgentScanRoot {
+        path: path.clone(),
+        source_root: Some(path),
+        source_kind: Some(AgentSkillSourceKind::Compatibility),
+    }
+}
+
+fn push_unique_scan_root(roots: &mut Vec<AgentScanRoot>, root: AgentScanRoot) {
+    if roots.iter().any(|existing| existing.path == root.path) {
+        return;
+    }
+    roots.push(root);
+}
+
 fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
     let primary_root = PathBuf::from(&agent.global_skills_dir);
-    if agent.id != "claude-code" {
-        return vec![AgentScanRoot {
-            path: primary_root,
-            source_root: None,
-            claude_source: None,
-        }];
+
+    let compatibility_root = agents_skills_compatibility_root(&primary_root);
+    if db::agent_supports_universal_agents_skills(&agent.id)
+        && compatibility_root
+            .as_ref()
+            .is_some_and(|root| root == &primary_root)
+    {
+        return compatibility_root
+            .map(compatibility_scan_root)
+            .into_iter()
+            .collect();
     }
 
-    let mut roots = vec![AgentScanRoot {
-        path: primary_root.clone(),
-        source_root: Some(primary_root.clone()),
-        claude_source: Some(ClaudeSourceKind::User),
-    }];
-    roots.extend(claude_plugin_roots(&primary_root));
+    let mut roots = match agent.id.as_str() {
+        "claude-code" => {
+            let mut roots = vec![AgentScanRoot {
+                path: primary_root.clone(),
+                source_root: Some(primary_root.clone()),
+                source_kind: Some(AgentSkillSourceKind::User),
+            }];
+            roots.extend(claude_plugin_roots(&primary_root));
+            roots
+        }
+        _ => vec![AgentScanRoot {
+            path: primary_root.clone(),
+            source_root: None,
+            source_kind: None,
+        }],
+    };
+
+    if agent.id == "factory-droid" || db::agent_supports_universal_agents_skills(&agent.id) {
+        if let Some(compatibility_root) = compatibility_root {
+            if compatibility_root != primary_root {
+                push_unique_scan_root(&mut roots, compatibility_scan_root(compatibility_root));
+            }
+        }
+    }
+
     roots
 }
 
@@ -353,6 +573,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     for agent in &agents {
         let is_central = agent.category == "central";
         let scan_roots = scan_roots_for_agent(agent);
+        let tracks_observations = scan_roots.iter().any(|root| root.source_kind.is_some());
         let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
             .filter(|root| root.path.exists())
@@ -364,7 +585,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             skills_by_agent.insert(agent.id.clone(), 0);
             // Remove every installation row for this agent — the directory is gone.
             let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
-            if agent.id == "claude-code" {
+            if tracks_observations {
                 let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &[]).await;
             }
             continue;
@@ -382,12 +603,13 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 .unwrap_or(&root.path)
                 .to_string_lossy()
                 .into_owned();
-            let root_scanned = scan_directory(&root.path, is_central);
+            let root_scanned =
+                scan_skill_root(&root.path, is_central, ScanDirectoryOptions::nested());
 
             for skill in &root_scanned {
                 let now = Utc::now().to_rfc3339();
 
-                if let Some(source_kind) = root.claude_source {
+                if let Some(source_kind) = root.source_kind {
                     let observation = AgentSkillObservation {
                         row_id: claude_observation_row_id(&agent.id, &skill.dir_path),
                         agent_id: agent.id.clone(),
@@ -407,8 +629,9 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                     found_observation_row_ids.push(observation.row_id);
                 }
 
-                let should_persist_manageable_state =
-                    root.claude_source != Some(ClaudeSourceKind::Plugin);
+                let should_persist_manageable_state = root
+                    .source_kind
+                    .is_none_or(|source_kind| !source_kind.is_read_only());
                 if should_persist_manageable_state {
                     all_found_skill_ids.insert(skill.id.clone());
                     found_install_ids.push(skill.id.clone());
@@ -449,7 +672,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         // Reconciliation: remove installation rows for skills no longer present
         // in this agent's directory.
         db::delete_stale_skill_installations(pool, &agent.id, &found_install_ids).await?;
-        if agent.id == "claude-code" {
+        if tracks_observations {
             db::delete_stale_agent_skill_observations(pool, &agent.id, &found_observation_row_ids)
                 .await?;
         }
@@ -468,7 +691,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             continue;
         }
 
-        let scanned = scan_directory(dir, false);
+        let scanned = scan_skill_root(dir, false, ScanDirectoryOptions::nested());
         for skill in &scanned {
             all_found_skill_ids.insert(skill.id.clone());
             let now = Utc::now().to_rfc3339();
@@ -872,6 +1095,101 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    // ── scan_skill_root ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_scan_skill_root_finds_nested_category_skills() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(
+            &tmp.path().join("apple"),
+            "apple-reminders",
+            &valid_skill_md("Apple Reminders", "Nested category skill"),
+        );
+        create_skill_dir(
+            &tmp.path().join("mlops/evaluation"),
+            "weights-and-biases",
+            &valid_skill_md("Weights and Biases", "Deep nested category skill"),
+        );
+
+        let mut skills = scan_skill_root(
+            tmp.path(),
+            false,
+            ScanDirectoryOptions {
+                nested: true,
+                max_depth: 4,
+                follow_symlinks: true,
+            },
+        );
+        skills.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].id, "apple-reminders");
+        assert!(skills[0].dir_path.contains("apple/apple-reminders"));
+        assert_eq!(skills[1].id, "weights-and-biases");
+        assert!(skills[1]
+            .dir_path
+            .contains("mlops/evaluation/weights-and-biases"));
+    }
+
+    #[test]
+    fn test_scan_skill_root_follows_symlinked_bundle_without_looping() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let target = tmp.path().join("target-skills");
+        fs::create_dir_all(&root).unwrap();
+        create_skill_dir(
+            &target,
+            "using-superpowers",
+            &valid_skill_md("Using Superpowers", "Symlinked bundle skill"),
+        );
+        symlink(&target, root.join("superpowers")).unwrap();
+        symlink(&root, target.join("loop-back")).unwrap();
+
+        let skills = scan_skill_root(
+            &root,
+            true,
+            ScanDirectoryOptions {
+                nested: true,
+                max_depth: 4,
+                follow_symlinks: true,
+            },
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "using-superpowers");
+        assert!(skills[0].is_central);
+    }
+
+    #[test]
+    fn test_scan_skill_root_prefers_direct_duplicate_over_nested_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(
+            tmp.path(),
+            "shared-skill",
+            &valid_skill_md("Direct Shared", "Direct wins"),
+        );
+        create_skill_dir(
+            &tmp.path().join("bundle"),
+            "shared-skill",
+            &valid_skill_md("Nested Shared", "Nested duplicate"),
+        );
+
+        let skills = scan_skill_root(
+            tmp.path(),
+            false,
+            ScanDirectoryOptions {
+                nested: true,
+                max_depth: 4,
+                follow_symlinks: true,
+            },
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "Direct Shared");
+        assert!(skills[0].dir_path.ends_with("shared-skill"));
+        assert!(!skills[0].dir_path.contains("bundle/shared-skill"));
+    }
+
     // ── scan_all_skills_impl ──────────────────────────────────────────────────
 
     async fn setup_test_db() -> DbPool {
@@ -1035,6 +1353,43 @@ mod tests {
             .await
             .unwrap();
         assert!(skill.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_persists_nested_platform_skills() {
+        use crate::db;
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        let test_agent = db::Agent {
+            id: "nested-agent".to_string(),
+            display_name: "Nested Agent".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &test_agent).await.unwrap();
+
+        create_skill_dir(
+            &tmp.path().join("apple"),
+            "apple-reminders",
+            &valid_skill_md("Apple Reminders", "Nested platform skill"),
+        );
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(result.skills_by_agent.get("nested-agent").copied(), Some(1));
+        let skills = db::get_skills_for_agent(&pool, "nested-agent")
+            .await
+            .unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "apple-reminders");
+        assert!(skills[0].dir_path.contains("apple/apple-reminders"));
     }
 
     #[tokio::test]
@@ -1399,6 +1754,269 @@ mod tests {
         let skills = db::get_skills_by_agent(&pool, "not-claude").await.unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "user-skill");
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_factory_droid_observes_agents_skills_read_only() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('factory-droid', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let factory_root = tmp.path().join(".factory/skills");
+        let shared_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&factory_root).unwrap();
+        fs::create_dir_all(&shared_root).unwrap();
+
+        create_skill_dir(
+            &shared_root.join("superpowers"),
+            "using-superpowers",
+            &valid_skill_md("Using Superpowers", "Shared Factory-compatible skill"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'factory-droid'")
+            .bind(factory_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(shared_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(
+            result.skills_by_agent.get("factory-droid").copied(),
+            Some(1)
+        );
+        let observations = db::get_agent_skill_observations(&pool, "factory-droid")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].skill_id, "using-superpowers");
+        assert_eq!(observations[0].source_kind, "compatibility");
+        assert!(observations[0].is_read_only);
+        assert!(observations[0]
+            .dir_path
+            .contains("superpowers/using-superpowers"));
+
+        let platform_skills = db::get_skills_for_agent(&pool, "factory-droid")
+            .await
+            .unwrap();
+        assert_eq!(platform_skills.len(), 1);
+        assert_eq!(platform_skills[0].id, "using-superpowers");
+        assert!(platform_skills[0].is_read_only);
+
+        let factory_installations: Vec<_> = db::get_skill_installations(&pool, "using-superpowers")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|installation| installation.agent_id == "factory-droid")
+            .collect();
+        assert!(
+            factory_installations.is_empty(),
+            "shared .agents skills must not be persisted as removable Factory Droid installs"
+        );
+
+        let skill = db::get_skill_by_id(&pool, "using-superpowers")
+            .await
+            .unwrap()
+            .expect("central scan should persist the shared skill");
+        assert!(skill.is_central);
+        assert_eq!(
+            skill.canonical_path.as_deref(),
+            Some(
+                shared_root
+                    .join("superpowers/using-superpowers")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_universal_agent_observes_agents_skills_read_only() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('cursor', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let cursor_root = tmp.path().join(".cursor/skills");
+        let shared_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&cursor_root).unwrap();
+        fs::create_dir_all(&shared_root).unwrap();
+
+        create_skill_dir(
+            &shared_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Universal compatibility skill"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
+            .bind(cursor_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(shared_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(result.skills_by_agent.get("cursor").copied(), Some(1));
+        let observations = db::get_agent_skill_observations(&pool, "cursor")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].source_kind, "compatibility");
+        assert!(observations[0].is_read_only);
+
+        let cursor_installations: Vec<_> = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|installation| installation.agent_id == "cursor")
+            .collect();
+        assert!(
+            cursor_installations.is_empty(),
+            "shared .agents skills must not be persisted as removable universal-agent installs"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_universal_primary_agents_skills_is_read_only() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('antigravity', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let shared_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&shared_root).unwrap();
+        create_skill_dir(
+            &shared_root,
+            "native-universal-skill",
+            &valid_skill_md("Native Universal Skill", "Primary root is shared"),
+        );
+
+        sqlx::query(
+            "UPDATE agents SET global_skills_dir = ? WHERE id IN ('antigravity', 'central')",
+        )
+        .bind(shared_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let observations = db::get_agent_skill_observations(&pool, "antigravity")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].source_kind, "compatibility");
+        assert!(observations[0].is_read_only);
+
+        let antigravity_installations: Vec<_> =
+            db::get_skill_installations(&pool, "native-universal-skill")
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|installation| installation.agent_id == "antigravity")
+                .collect();
+        assert!(
+            antigravity_installations.is_empty(),
+            "universal platforms that use .agents/skills as primary root must remain read-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_all_skills_impl_factory_droid_primary_root_wins_over_shared_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('factory-droid', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let factory_root = tmp.path().join(".factory/skills");
+        let shared_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&factory_root).unwrap();
+        fs::create_dir_all(&shared_root).unwrap();
+
+        create_skill_dir(
+            &factory_root,
+            "shared-skill",
+            &valid_skill_md("Factory Skill", "Factory-specific copy"),
+        );
+        create_skill_dir(
+            &shared_root,
+            "shared-skill",
+            &valid_skill_md("Central Skill", "Shared compatibility copy"),
+        );
+
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'factory-droid'")
+            .bind(factory_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(shared_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let factory_installation = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|installation| installation.agent_id == "factory-droid")
+            .expect("Factory Droid primary root should remain a manageable install");
+        assert_eq!(
+            factory_installation.installed_path,
+            factory_root.join("shared-skill").to_string_lossy()
+        );
+
+        let platform_skills = db::get_skills_for_agent(&pool, "factory-droid")
+            .await
+            .unwrap();
+        assert_eq!(platform_skills.len(), 1);
+        assert_eq!(platform_skills[0].id, "shared-skill");
+        assert!(!platform_skills[0].is_read_only);
+        assert_eq!(
+            platform_skills[0].dir_path,
+            factory_root.join("shared-skill").to_string_lossy()
+        );
     }
 
     #[tokio::test]

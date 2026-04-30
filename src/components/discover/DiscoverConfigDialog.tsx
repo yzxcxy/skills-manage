@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 
 import {
   Dialog,
-  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -70,7 +69,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="min-w-0 overflow-hidden sm:max-w-lg">
+      <DialogContent className="min-w-0 overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Radar className="size-5" />
@@ -79,7 +78,10 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
           <DialogDescription>{t("discover.desc")}</DialogDescription>
         </DialogHeader>
 
-        <DialogBody className="min-w-0 space-y-4 overflow-x-hidden px-0 py-2">
+        <div
+          data-slot="dialog-body"
+          className="min-w-0 max-h-none space-y-4 overflow-visible px-0 py-2"
+        >
           {/* Scan Roots */}
           <div className="min-w-0 overflow-x-hidden">
             <h3 className="text-sm font-medium mb-2">{t("discover.scanRoots")}</h3>
@@ -160,7 +162,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
               <span>{t("discover.noRootsEnabled")}</span>
             </div>
           )}
-        </DialogBody>
+        </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

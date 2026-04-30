@@ -61,7 +61,10 @@ export function InstallDialog({
       // Default: check agents that are already linked (show current state).
       const initialSelection = new Set<string>(
         targetAgents
-          .filter((a) => skill.linked_agents.includes(a.id))
+          .filter((a) =>
+            skill.linked_agents.includes(a.id) ||
+            (skill.read_only_agents?.includes(a.id) ?? false)
+          )
           .map((a) => a.id)
       );
       setSelectedAgentIds(initialSelection);
@@ -83,10 +86,16 @@ export function InstallDialog({
     });
   }
 
+  function getSelectedInstallableAgentIds() {
+    if (!skill) return [];
+    const readOnlyAgentIds = new Set(skill.read_only_agents ?? []);
+    return Array.from(selectedAgentIds).filter((id) => !readOnlyAgentIds.has(id));
+  }
+
   async function handleConfirm() {
     if (!skill) return;
 
-    const agentIds = Array.from(selectedAgentIds);
+    const agentIds = getSelectedInstallableAgentIds();
     if (agentIds.length === 0) {
       setError(t("installDialog.selectPlatform"));
       return;
@@ -105,6 +114,7 @@ export function InstallDialog({
   }
 
   if (!skill) return null;
+  const selectedInstallableCount = getSelectedInstallableAgentIds().length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -128,6 +138,7 @@ export function InstallDialog({
             ) : (
               targetAgents.map((agent) => {
                 const isLinked = skill.linked_agents.includes(agent.id);
+                const isReadOnly = skill.read_only_agents?.includes(agent.id) ?? false;
                 const isChecked = selectedAgentIds.has(agent.id);
 
                 return (
@@ -137,6 +148,7 @@ export function InstallDialog({
                   >
                     <Checkbox
                       checked={isChecked}
+                      disabled={isReadOnly}
                       onCheckedChange={(checked) =>
                         handleCheckboxChange(agent.id, !!checked)
                       }
@@ -144,17 +156,23 @@ export function InstallDialog({
                     />
                     <span
                       className="text-sm text-foreground flex-1 cursor-pointer select-none truncate"
-                      onClick={() =>
-                        handleCheckboxChange(agent.id, !isChecked)
-                      }
+                      onClick={() => {
+                        if (!isReadOnly) {
+                          handleCheckboxChange(agent.id, !isChecked);
+                        }
+                      }}
                     >
                       {agent.display_name}
                     </span>
-                    {isLinked && (
+                    {isReadOnly ? (
+                      <span className="text-xs text-primary shrink-0">
+                        {t("installDialog.alwaysIncluded")}
+                      </span>
+                    ) : isLinked ? (
                       <span className="text-xs text-primary shrink-0">
                         {t("installDialog.alreadyLinked")}
                       </span>
-                    )}
+                    ) : null}
                     {!agent.is_detected && (
                       <span className="text-xs text-muted-foreground shrink-0">
                         {t("installDialog.notDetected")}
@@ -210,7 +228,7 @@ export function InstallDialog({
           </Button>
           <Button
             onClick={handleConfirm}
-            disabled={isLoading || selectedAgentIds.size === 0}
+            disabled={isLoading || selectedInstallableCount === 0}
           >
             {isLoading ? (
               <>
@@ -218,7 +236,7 @@ export function InstallDialog({
                 {t("installDialog.installing")}
               </>
             ) : (
-              t("installDialog.confirmInstall", { count: selectedAgentIds.size })
+              t("installDialog.confirmInstall", { count: selectedInstallableCount })
             )}
           </Button>
         </DialogFooter>

@@ -29,12 +29,45 @@ const NEW_PLATFORM_IDS = [
   "kilocode",
   "ob1",
   "amp",
+  "antigravity",
+  "cline",
+  "deep-agents",
+  "dexto",
+  "firebender",
+  "kimi-code-cli",
   "kiro",
   "codebuddy",
   "hermes",
   "autoclaw",
   "copilot",
+  "warp",
   "aider",
+  "aider-desk",
+  "bob",
+  "codearts-agent",
+  "codemaker",
+  "codestudio",
+  "command-code",
+  "continue",
+  "cortex",
+  "crush",
+  "devin",
+  "forgecode",
+  "goose",
+  "iflow-cli",
+  "kode",
+  "mcpjam",
+  "mistral-vibe",
+  "mux",
+  "openhands",
+  "pi",
+  "rovodev",
+  "roo",
+  "tabnine-cli",
+  "zencoder",
+  "neovate",
+  "pochi",
+  "adal",
   "obsidian",
 ];
 
@@ -48,6 +81,16 @@ describe("PlatformIcon", () => {
   it("renders an SVG element for claude-code", () => {
     const { container } = render(<PlatformIcon agentId="claude-code" />);
     expect(container.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("does not expose Antigravity metadata for claude-code", () => {
+    const { container } = render(<PlatformIcon agentId="claude-code" />);
+    expect(container.textContent).not.toContain("Antigravity");
+  });
+
+  it("uses a 24px viewBox for claude-code to avoid clipping", () => {
+    const { container } = render(<PlatformIcon agentId="claude-code" />);
+    expect(container.querySelector("svg")).toHaveAttribute("viewBox", "0 0 24 24");
   });
 
   it("renders an img element for codex", () => {
@@ -152,6 +195,21 @@ describe("PlatformIcon", () => {
     expect(container.querySelector("svg")).toBeInTheDocument();
   });
 
+  it("renders SVG elements for universal .agents platforms", () => {
+    for (const agentId of [
+      "antigravity",
+      "cline",
+      "deep-agents",
+      "dexto",
+      "firebender",
+      "kimi-code-cli",
+      "warp",
+    ]) {
+      const { container } = render(<PlatformIcon agentId={agentId} />);
+      expect(container.querySelector("svg"), agentId).toBeInTheDocument();
+    }
+  });
+
   it("renders an img element for kiro", () => {
     const { container } = render(<PlatformIcon agentId="kiro" />);
     expect(container.querySelector("img")).toBeInTheDocument();
@@ -180,6 +238,40 @@ describe("PlatformIcon", () => {
   it("renders an SVG element for aider", () => {
     const { container } = render(<PlatformIcon agentId="aider" />);
     expect(container.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("renders SVG elements for the 39 platform directory additions", () => {
+    for (const agentId of [
+      "aider-desk",
+      "bob",
+      "codearts-agent",
+      "codemaker",
+      "codestudio",
+      "command-code",
+      "continue",
+      "cortex",
+      "crush",
+      "devin",
+      "forgecode",
+      "goose",
+      "iflow-cli",
+      "kode",
+      "mcpjam",
+      "mistral-vibe",
+      "mux",
+      "openhands",
+      "pi",
+      "rovodev",
+      "roo",
+      "tabnine-cli",
+      "zencoder",
+      "neovate",
+      "pochi",
+      "adal",
+    ]) {
+      const { container } = render(<PlatformIcon agentId={agentId} />);
+      expect(container.querySelector("svg"), agentId).toBeInTheDocument();
+    }
   });
 
   // ── Uniqueness — each platform renders a distinct SVG ─────────────────────

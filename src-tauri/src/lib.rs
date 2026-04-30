@@ -54,6 +54,7 @@ pub fn run() {
             // Skills
             commands::skills::get_skills_by_agent,
             commands::skills::get_central_skills,
+            commands::skills::delete_central_skill,
             commands::skills::get_skill_detail,
             commands::skills::read_skill_content,
             commands::skills::read_file_by_path,
@@ -80,6 +81,8 @@ pub fn run() {
             // Discover
             commands::discover::discover_scan_roots,
             commands::discover::get_scan_roots,
+            commands::discover::get_obsidian_vaults,
+            commands::discover::get_obsidian_vault_skills,
             commands::discover::set_scan_root_enabled,
             commands::discover::start_project_scan,
             commands::discover::stop_project_scan,

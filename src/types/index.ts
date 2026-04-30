@@ -33,7 +33,7 @@ export interface ScanResult {
   skills_by_agent: Record<string, number>;
 }
 
-export type ClaudeSourceKind = "user" | "plugin";
+export type ClaudeSourceKind = "user" | "plugin" | "compatibility";
 
 export interface ScannedSkill {
   id: string;
@@ -84,6 +84,8 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   is_read_only?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
+  /** Agent IDs that can see this central skill through a read-only compatibility root. */
+  read_only_agents?: string[];
   installations: SkillInstallation[];
   /** Collections this skill currently belongs to. */
   collections?: Collection[];
@@ -116,11 +118,24 @@ export interface SkillWithLinks {
   updated_at?: string;
   /** Agent IDs that currently have this skill installed (symlink or copy). */
   linked_agents: string[];
+  /** Agent IDs that can see this skill through a read-only compatibility root. */
+  read_only_agents?: string[];
 }
 
 export interface BatchInstallResult {
   succeeded: string[];
   failed: Array<{ agent_id: string; error: string }>;
+}
+
+export interface DeleteCentralSkillOptions {
+  cascadeUninstall: boolean;
+}
+
+export interface DeleteCentralSkillResult {
+  skillId: string;
+  removedCanonicalPath: string;
+  uninstalledAgents: string[];
+  skippedReadOnlyAgents: string[];
 }
 
 // ─── Collection Types ─────────────────────────────────────────────────────────
@@ -165,6 +180,13 @@ export interface ScanRoot {
   label: string;
   exists: boolean;
   enabled: boolean;
+}
+
+export interface ObsidianVault {
+  id: string;
+  name: string;
+  path: string;
+  skill_count: number;
 }
 
 export interface DiscoveredSkill {

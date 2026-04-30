@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
@@ -23,6 +23,14 @@ pub struct ScanRoot {
     pub label: String,
     pub exists: bool,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObsidianVault {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub skill_count: usize,
 }
 
 /// A project-level skill discovered during a full-disk scan.
@@ -90,6 +98,18 @@ pub enum ImportTarget {
 enum DiscoveredPlatformInstallMethod {
     Symlink,
     Copy,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ObsidianRegistryFile {
+    #[serde(default)]
+    vaults: HashMap<String, ObsidianRegistryVault>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ObsidianRegistryVault {
+    #[serde(default)]
+    path: Option<String>,
 }
 
 impl DiscoveredPlatformInstallMethod {
@@ -163,6 +183,15 @@ fn default_scan_roots() -> Vec<ScanRoot> {
 
 fn default_scan_roots_for_home(home: &Path) -> Vec<ScanRoot> {
     let candidates = vec![
+        (
+            path_to_string(
+                &home
+                    .join("Library")
+                    .join("Mobile Documents")
+                    .join("com~apple~CloudDocs"),
+            ),
+            "iCloud",
+        ),
         (path_to_string(&home.join("projects")), "projects"),
         (path_to_string(&home.join("Documents")), "Documents"),
         (path_to_string(&home.join("Developer")), "Developer"),
@@ -171,46 +200,141 @@ fn default_scan_roots_for_home(home: &Path) -> Vec<ScanRoot> {
         (path_to_string(&home.join("code")), "code"),
         (path_to_string(&home.join("repos")), "repos"),
         (path_to_string(&home.join("Desktop")), "Desktop"),
-        (
-            path_to_string(
-                &home
-                    .join("Library")
-                    .join("Mobile Documents")
-                    .join("iCloud~md~obsidian")
-                    .join("Documents"),
-            ),
-            "Obsidian iCloud",
-        ),
         // macOS: scan /Applications for apps with built-in skills (e.g. OpenClaw)
         ("/Applications".to_string(), "Applications"),
     ];
 
     candidates
         .into_iter()
-        .map(|(path, label)| {
-            let exists = Path::new(&path).exists();
-            ScanRoot {
-                path,
-                label: label.to_string(),
-                exists,
-                enabled: exists, // auto-enable roots that exist
-            }
-        })
+        .map(|(path, label)| scan_root_from_candidate(path, label))
         .collect()
 }
 
-fn normalized_scan_root_key(path: &str) -> String {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return path_to_string(&canonical);
+fn scan_root_from_candidate(path: String, label: &str) -> ScanRoot {
+    let path = normalize_scan_root_path(&path);
+    let exists = Path::new(&path).exists();
+    ScanRoot {
+        path,
+        label: label.to_string(),
+        exists,
+        enabled: exists, // auto-enable roots that exist
     }
+}
 
+fn normalize_scan_root_path(path: &str) -> String {
     let trimmed = path.trim();
-    let without_trailing = trimmed.trim_end_matches(['/', '\\']);
+    let unquoted = if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0];
+        let last = trimmed.as_bytes()[trimmed.len() - 1];
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+
+    let unescaped = unescape_shell_path(unquoted);
+    let without_trailing = unescaped.trim_end_matches(['/', '\\']);
     if without_trailing.is_empty() {
-        trimmed.to_string()
+        unescaped
     } else {
         without_trailing.to_string()
     }
+}
+
+fn unescape_shell_path(path: &str) -> String {
+    let mut output = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                if is_shell_escaped_path_char(next) {
+                    output.push(next);
+                    chars.next();
+                    continue;
+                }
+            }
+        }
+        output.push(ch);
+    }
+
+    output
+}
+
+fn is_shell_escaped_path_char(ch: char) -> bool {
+    matches!(
+        ch,
+        ' ' | '\''
+            | '"'
+            | '\\'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '&'
+            | '|'
+            | ';'
+            | '<'
+            | '>'
+            | '*'
+            | '?'
+            | '$'
+            | '`'
+            | '!'
+            | '#'
+    )
+}
+
+fn normalized_scan_root_key(path: &str) -> String {
+    let normalized = normalize_scan_root_path(path);
+    if let Ok(canonical) = std::fs::canonicalize(&normalized) {
+        return path_to_string(&canonical);
+    }
+
+    let without_trailing = normalized.trim_end_matches(['/', '\\']);
+    if without_trailing.is_empty() {
+        normalized
+    } else {
+        without_trailing.to_string()
+    }
+}
+
+fn is_legacy_obsidian_icloud_scan_root(path: &str) -> bool {
+    let normalized = normalize_scan_root_path(path);
+    let parts: Vec<_> = Path::new(&normalized)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    parts.windows(4).any(|window| {
+        window
+            == [
+                "Library",
+                "Mobile Documents",
+                "iCloud~md~obsidian",
+                "Documents",
+            ]
+    })
+}
+
+fn is_child_scan_root(path: &str, parent: &str) -> bool {
+    let path_key = normalized_scan_root_key(path);
+    let parent_key = normalized_scan_root_key(parent);
+    path_key != parent_key && Path::new(&path_key).starts_with(Path::new(&parent_key))
+}
+
+fn is_redundant_custom_scan_root(path: &str, roots: &[ScanRoot]) -> bool {
+    roots
+        .iter()
+        .any(|root| root.exists && is_child_scan_root(path, &root.path))
 }
 
 fn label_for_custom_scan_root(path: &str, label: Option<&str>) -> String {
@@ -227,7 +351,21 @@ fn label_for_custom_scan_root(path: &str, label: Option<&str>) -> String {
 }
 
 async fn build_scan_roots(pool: &DbPool, defaults: Vec<ScanRoot>) -> Result<Vec<ScanRoot>, String> {
-    let mut roots = defaults;
+    let mut roots: Vec<ScanRoot> = defaults
+        .into_iter()
+        .filter_map(|root| {
+            let path = normalize_scan_root_path(&root.path);
+            if is_legacy_obsidian_icloud_scan_root(&path) {
+                return None;
+            }
+            let exists = Path::new(&path).exists();
+            Some(ScanRoot {
+                path,
+                exists,
+                ..root
+            })
+        })
+        .collect();
     let mut seen_paths: HashSet<String> = roots
         .iter()
         .map(|root| normalized_scan_root_key(&root.path))
@@ -239,22 +377,27 @@ async fn build_scan_roots(pool: &DbPool, defaults: Vec<ScanRoot>) -> Result<Vec<
         .filter(|dir| !dir.is_builtin)
         .collect();
     custom_dirs.sort_by(|a, b| {
-        a.path
-            .cmp(&b.path)
+        normalize_scan_root_path(&a.path)
+            .cmp(&normalize_scan_root_path(&b.path))
             .then_with(|| a.label.cmp(&b.label))
             .then_with(|| a.id.cmp(&b.id))
     });
 
     for dir in custom_dirs {
-        let key = normalized_scan_root_key(&dir.path);
-        if !seen_paths.insert(key) {
+        let path = normalize_scan_root_path(&dir.path);
+        if is_legacy_obsidian_icloud_scan_root(&path) {
             continue;
         }
+        let key = normalized_scan_root_key(&path);
+        if seen_paths.contains(&key) || is_redundant_custom_scan_root(&path, &roots) {
+            continue;
+        }
+        seen_paths.insert(key);
 
         roots.push(ScanRoot {
-            path: dir.path.clone(),
-            label: label_for_custom_scan_root(&dir.path, dir.label.as_deref()),
-            exists: Path::new(&dir.path).exists(),
+            path: path.clone(),
+            label: label_for_custom_scan_root(&path, dir.label.as_deref()),
+            exists: Path::new(&path).exists(),
             enabled: dir.is_active,
         });
     }
@@ -264,10 +407,20 @@ async fn build_scan_roots(pool: &DbPool, defaults: Vec<ScanRoot>) -> Result<Vec<
     // mapping path -> enabled (bool). This override is applied after default
     // and custom roots are merged so duplicate paths get one deterministic state.
     if let Some(json) = db::get_setting(pool, "discover_scan_roots_config").await? {
-        let config: HashMap<String, bool> =
+        let raw_config: HashMap<String, bool> =
             serde_json::from_str(&json).map_err(|e| format!("Invalid scan roots config: {}", e))?;
+        let normalized_config: HashMap<String, bool> = raw_config
+            .iter()
+            .map(|(path, enabled)| (normalized_scan_root_key(path), *enabled))
+            .collect();
         for root in &mut roots {
-            if let Some(&enabled) = config.get(&root.path) {
+            if let Some(&enabled) = raw_config.get(&root.path) {
+                root.enabled = enabled;
+                continue;
+            }
+
+            let key = normalized_scan_root_key(&root.path);
+            if let Some(&enabled) = normalized_config.get(&key) {
                 root.enabled = enabled;
             }
         }
@@ -281,22 +434,31 @@ async fn get_scan_roots_impl(pool: &DbPool) -> Result<Vec<ScanRoot>, String> {
 }
 
 /// Build the list of platform skill directory patterns to look for.
-/// For each enabled agent, its `global_skills_dir` is split to derive a
-/// relative pattern like `.claude/skills` from `/home/user/.claude/skills`.
+/// Prefer each built-in agent's project-relative skill directory. Older rows
+/// without one fall back to deriving a relative pattern from `global_skills_dir`.
 fn platform_skill_patterns(_pool: &DbPool) -> Vec<(String, String, PathBuf)> {
     // (agent_id, display_name, relative_subpath)
     // We compute this synchronously since it only reads from the built-in
     // agent list which is static after init.
     let home = resolve_home_dir();
 
+    let mut seen = HashSet::new();
     db::builtin_agents()
         .iter()
         .filter(|a| a.id != "central")
         .filter_map(|a| {
-            let full = PathBuf::from(&a.global_skills_dir);
-            // Strip home prefix to get relative path like ".claude/skills"
-            let rel = full.strip_prefix(&home).ok()?;
-            Some((a.id.clone(), a.display_name.clone(), rel.to_path_buf()))
+            let rel = match a.project_skills_dir.as_deref() {
+                Some(project_skills_dir) => PathBuf::from(project_skills_dir),
+                None => {
+                    let full = PathBuf::from(&a.global_skills_dir);
+                    // Strip home prefix to get relative path like ".claude/skills".
+                    full.strip_prefix(&home).ok()?.to_path_buf()
+                }
+            };
+            if !seen.insert(rel.to_path_buf()) {
+                return None;
+            }
+            Some((a.id.clone(), a.display_name.clone(), rel))
         })
         .collect()
 }
@@ -389,6 +551,188 @@ fn obsidian_qualified_id(vault_path: &str, skill_id: &str) -> String {
     )
 }
 
+fn obsidian_vault_id(vault_path: &str) -> String {
+    stable_path_hash(vault_path)
+}
+
+fn obsidian_registry_path_for_home(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("obsidian")
+        .join("obsidian.json")
+}
+
+fn obsidian_icloud_documents_dir_for_home(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Mobile Documents")
+        .join("iCloud~md~obsidian")
+        .join("Documents")
+}
+
+fn default_obsidian_registry_path() -> PathBuf {
+    obsidian_registry_path_for_home(&resolve_home_dir())
+}
+
+fn default_obsidian_icloud_documents_dir() -> PathBuf {
+    obsidian_icloud_documents_dir_for_home(&resolve_home_dir())
+}
+
+fn read_obsidian_registry_vault_paths(registry_path: &Path) -> Vec<PathBuf> {
+    let content = match std::fs::read_to_string(registry_path) {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+    let registry: ObsidianRegistryFile = match serde_json::from_str(&content) {
+        Ok(registry) => registry,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut paths: Vec<PathBuf> = registry
+        .vaults
+        .into_values()
+        .filter_map(|vault| vault.path)
+        .map(|path| PathBuf::from(normalize_scan_root_path(&path)))
+        .filter(|path| path.is_dir() && is_obsidian_vault_dir(path))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn is_obsidian_icloud_documents_child(path: &Path) -> bool {
+    let parts: Vec<_> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    if parts.len() < 5 {
+        return false;
+    }
+
+    for index in 0..=(parts.len() - 4) {
+        if parts[index..index + 4]
+            == [
+                "Library",
+                "Mobile Documents",
+                "iCloud~md~obsidian",
+                "Documents",
+            ]
+        {
+            return parts.len() == index + 5;
+        }
+    }
+
+    false
+}
+
+fn select_obsidian_registry_vault_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let icloud_paths: Vec<PathBuf> = paths
+        .iter()
+        .filter(|path| is_obsidian_icloud_documents_child(path))
+        .cloned()
+        .collect();
+
+    if icloud_paths.is_empty() {
+        paths
+    } else {
+        icloud_paths
+    }
+}
+
+fn obsidian_source_vault_paths_with_registry(
+    registry_path: &Path,
+    fallback_icloud_parent: &Path,
+) -> Vec<PathBuf> {
+    let registry_paths =
+        select_obsidian_registry_vault_paths(read_obsidian_registry_vault_paths(registry_path));
+    if !registry_paths.is_empty() {
+        return registry_paths;
+    }
+
+    direct_obsidian_vault_children(fallback_icloud_parent)
+}
+
+fn obsidian_source_vault_paths() -> Vec<PathBuf> {
+    obsidian_source_vault_paths_with_registry(
+        &default_obsidian_registry_path(),
+        &default_obsidian_icloud_documents_dir(),
+    )
+}
+
+fn scan_root_contains_path(root: &ScanRoot, path: &Path) -> bool {
+    let root_key = normalized_scan_root_key(&root.path);
+    let path_key = normalized_scan_root_key(&path.to_string_lossy());
+    Path::new(&path_key).starts_with(Path::new(&root_key))
+}
+
+fn is_icloud_drive_root(path: &Path) -> bool {
+    let parts: Vec<_> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    parts
+        .windows(3)
+        .any(|window| window == ["Library", "Mobile Documents", "com~apple~CloudDocs"])
+}
+
+fn direct_obsidian_vault_children(root: &Path) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && is_obsidian_vault_dir(path))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn allowed_obsidian_vault_paths_for_roots_with_registry(
+    roots: &[&ScanRoot],
+    registry_path: &Path,
+) -> HashSet<String> {
+    let mut registry_paths: Vec<PathBuf> =
+        select_obsidian_registry_vault_paths(read_obsidian_registry_vault_paths(registry_path))
+            .into_iter()
+            .filter(|path| roots.iter().any(|root| scan_root_contains_path(root, path)))
+            .collect();
+
+    if registry_paths.is_empty() {
+        for root in roots {
+            let root_path = PathBuf::from(&root.path);
+            if is_obsidian_vault_dir(&root_path) {
+                registry_paths.push(root_path.clone());
+            }
+            if is_icloud_drive_root(&root_path) {
+                registry_paths.extend(direct_obsidian_vault_children(&root_path));
+            }
+        }
+    }
+
+    registry_paths
+        .into_iter()
+        .map(|path| normalized_scan_root_key(&path.to_string_lossy()))
+        .collect()
+}
+
+fn allowed_obsidian_vault_paths_for_roots(roots: &[&ScanRoot]) -> HashSet<String> {
+    allowed_obsidian_vault_paths_for_roots_with_registry(roots, &default_obsidian_registry_path())
+}
+
+fn is_allowed_obsidian_vault_dir(path: &Path, allowed_vault_paths: &HashSet<String>) -> bool {
+    allowed_vault_paths.contains(&normalized_scan_root_key(&path.to_string_lossy()))
+}
+
 fn platform_display_name(platform_id: &str) -> String {
     if platform_id == OBSIDIAN_PLATFORM_ID {
         return OBSIDIAN_PLATFORM_NAME.to_string();
@@ -419,7 +763,11 @@ fn scan_obsidian_vault(vault_dir: &Path, central_dir: &Path) -> Option<Discovere
         PathBuf::from(".claude/skills"),
     ] {
         let source_dir = vault_dir.join(rel_source);
-        let mut scanned = super::scanner::scan_directory(&source_dir, false);
+        let mut scanned = super::scanner::scan_skill_root(
+            &source_dir,
+            false,
+            super::scanner::ScanDirectoryOptions::nested(),
+        );
         scanned.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.dir_path.cmp(&b.dir_path)));
 
         for skill in scanned {
@@ -466,13 +814,26 @@ fn scan_regular_project_dir(
     let mut project_skills: Vec<DiscoveredSkill> = Vec::new();
 
     for (agent_id, display_name, rel_pattern) in patterns {
+        if rel_pattern == &PathBuf::from("skills")
+            && project_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
+
         let skill_dir = project_dir.join(rel_pattern);
 
         if !skill_dir.exists() {
             continue;
         }
 
-        let scanned = super::scanner::scan_directory(&skill_dir, false);
+        let scanned = super::scanner::scan_skill_root(
+            &skill_dir,
+            false,
+            super::scanner::ScanDirectoryOptions::nested(),
+        );
 
         for skill in scanned {
             // Preserve the established ordinary Discover row identity. Obsidian
@@ -533,14 +894,43 @@ fn scan_root_for_projects(
 ) -> Vec<DiscoveredProject> {
     let mut projects = Vec::new();
     let mut seen_project_paths = HashSet::new();
+    let root_string = path_to_string(root);
+    let root_scan = ScanRoot {
+        path: root_string,
+        label: file_name_or_unknown(root),
+        exists: root.exists(),
+        enabled: true,
+    };
+    let mut allowed_obsidian_vault_paths =
+        allowed_obsidian_vault_paths_for_roots_with_registry(&[&root_scan], Path::new(""));
+    collect_test_obsidian_vault_paths(root, &mut allowed_obsidian_vault_paths);
     scan_root_for_projects_with_seen(
         root,
         patterns,
         central_dir,
         &mut seen_project_paths,
         &mut projects,
+        &allowed_obsidian_vault_paths,
     );
     projects
+}
+
+#[cfg(test)]
+fn collect_test_obsidian_vault_paths(root: &Path, out: &mut HashSet<String>) {
+    if is_obsidian_vault_dir(root) {
+        out.insert(normalized_scan_root_key(&root.to_string_lossy()));
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_test_obsidian_vault_paths(&path, out);
+        }
+    }
 }
 
 fn scan_root_for_projects_with_seen(
@@ -549,8 +939,17 @@ fn scan_root_for_projects_with_seen(
     central_dir: &Path,
     seen_project_paths: &mut HashSet<String>,
     projects: &mut Vec<DiscoveredProject>,
+    allowed_obsidian_vault_paths: &HashSet<String>,
 ) {
-    scan_root_recursive(root, patterns, central_dir, 0, projects, seen_project_paths);
+    scan_root_recursive(
+        root,
+        patterns,
+        central_dir,
+        0,
+        projects,
+        seen_project_paths,
+        allowed_obsidian_vault_paths,
+    );
 }
 
 /// Inner recursive walker. Accumulates found projects into `projects`.
@@ -563,6 +962,7 @@ fn scan_root_recursive(
     depth: u32,
     projects: &mut Vec<DiscoveredProject>,
     seen_project_paths: &mut HashSet<String>,
+    allowed_obsidian_vault_paths: &HashSet<String>,
 ) {
     if depth > MAX_SCAN_DEPTH {
         return;
@@ -580,13 +980,17 @@ fn scan_root_recursive(
 
     let current_path_key = current_dir.to_string_lossy().into_owned();
     if !seen_project_paths.contains(&current_path_key) {
-        if let Some(project) = scan_obsidian_vault(current_dir, central_dir) {
-            seen_project_paths.insert(current_path_key);
-            projects.push(project);
-            // A vault is a single Discover project. Do not also treat its
-            // `.agents/skills` or `.claude/skills` directories as ordinary
-            // platform projects.
-            return;
+        if is_allowed_obsidian_vault_dir(current_dir, allowed_obsidian_vault_paths) {
+            if let Some(project) = scan_obsidian_vault(current_dir, central_dir) {
+                seen_project_paths.insert(current_path_key.clone());
+                projects.push(project);
+                // A vault is a single Discover project. Do not also treat its
+                // `.agents/skills` or `.claude/skills` directories as ordinary
+                // platform projects.
+                return;
+            }
+        } else if is_obsidian_vault_dir(current_dir) {
+            seen_project_paths.insert(current_path_key.clone());
         }
 
         let project_skills = scan_regular_project_dir(current_dir, patterns, central_dir);
@@ -638,6 +1042,7 @@ fn scan_root_recursive(
             depth + 1,
             projects,
             seen_project_paths,
+            allowed_obsidian_vault_paths,
         );
     }
 }
@@ -719,6 +1124,7 @@ where
 
     // Filter to enabled roots that exist.
     let enabled_roots: Vec<&ScanRoot> = roots.iter().filter(|r| r.enabled && r.exists).collect();
+    let allowed_obsidian_vault_paths = allowed_obsidian_vault_paths_for_roots(&enabled_roots);
     let total_roots = enabled_roots.len();
 
     let mut all_projects: Vec<DiscoveredProject> = Vec::new();
@@ -740,6 +1146,7 @@ where
             central_dir,
             &mut seen_project_paths,
             &mut all_projects,
+            &allowed_obsidian_vault_paths,
         );
         let found_projects: Vec<DiscoveredProject> = all_projects[before_project_count..].to_vec();
         let root_completed = !is_scan_cancelled();
@@ -821,6 +1228,93 @@ where
     })
 }
 
+fn obsidian_vaults_from_allowed_paths(
+    allowed_vault_paths: &HashSet<String>,
+    central_dir: &Path,
+) -> Vec<ObsidianVault> {
+    let mut vaults: Vec<ObsidianVault> = allowed_vault_paths
+        .iter()
+        .filter_map(|path| {
+            let vault_path = PathBuf::from(path);
+            if !vault_path.is_dir() || !is_obsidian_vault_dir(&vault_path) {
+                return None;
+            }
+
+            let skill_count = scan_obsidian_vault(&vault_path, central_dir)
+                .map(|project| project.skills.len())
+                .unwrap_or(0);
+            if skill_count == 0 {
+                return None;
+            }
+
+            Some(ObsidianVault {
+                id: obsidian_vault_id(path),
+                name: file_name_or_unknown(&vault_path),
+                path: path.clone(),
+                skill_count,
+            })
+        })
+        .collect();
+
+    vaults.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    vaults
+}
+
+async fn get_obsidian_vaults_impl(_pool: &DbPool) -> Result<Vec<ObsidianVault>, String> {
+    let allowed_vault_paths: HashSet<String> = obsidian_source_vault_paths()
+        .into_iter()
+        .map(|path| normalized_scan_root_key(&path.to_string_lossy()))
+        .collect();
+    Ok(obsidian_vaults_from_allowed_paths(
+        &allowed_vault_paths,
+        &central_skills_dir(),
+    ))
+}
+
+async fn get_obsidian_vault_skills_impl(
+    pool: &DbPool,
+    vault_id: &str,
+) -> Result<Vec<DiscoveredSkill>, String> {
+    let allowed_vault_paths: HashSet<String> = obsidian_source_vault_paths()
+        .into_iter()
+        .map(|path| normalized_scan_root_key(&path.to_string_lossy()))
+        .collect();
+
+    let vault_path = allowed_vault_paths
+        .iter()
+        .find(|path| obsidian_vault_id(path) == vault_id || path.as_str() == vault_id)
+        .cloned()
+        .ok_or_else(|| format!("Obsidian vault '{}' not found", vault_id))?;
+
+    let skills = scan_obsidian_vault(&PathBuf::from(&vault_path), &central_skills_dir())
+        .map(|project| project.skills)
+        .unwrap_or_default();
+
+    let now = Utc::now().to_rfc3339();
+    for skill in &skills {
+        db::insert_discovered_skill(
+            pool,
+            &skill.id,
+            &skill.name,
+            skill.description.as_deref(),
+            &skill.file_path,
+            &skill.dir_path,
+            &skill.project_path,
+            &skill.project_name,
+            &skill.platform_id,
+            &now,
+        )
+        .await?;
+    }
+
+    Ok(skills)
+}
+
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
 
 /// Auto-detect candidate scan roots and return them.
@@ -838,6 +1332,19 @@ pub async fn get_scan_roots(state: State<'_, AppState>) -> Result<Vec<ScanRoot>,
     get_scan_roots_impl(&state.db).await
 }
 
+#[tauri::command]
+pub async fn get_obsidian_vaults(state: State<'_, AppState>) -> Result<Vec<ObsidianVault>, String> {
+    get_obsidian_vaults_impl(&state.db).await
+}
+
+#[tauri::command]
+pub async fn get_obsidian_vault_skills(
+    state: State<'_, AppState>,
+    vault_id: String,
+) -> Result<Vec<DiscoveredSkill>, String> {
+    get_obsidian_vault_skills_impl(&state.db, &vault_id).await
+}
+
 /// Persist the enabled/disabled state of a scan root.
 ///
 /// Updates the "discover_scan_roots_config" setting in the DB, which
@@ -848,8 +1355,14 @@ pub async fn set_scan_root_enabled(
     path: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let pool = &state.db;
+    set_scan_root_enabled_impl(&state.db, path, enabled).await
+}
 
+async fn set_scan_root_enabled_impl(
+    pool: &DbPool,
+    path: String,
+    enabled: bool,
+) -> Result<(), String> {
     // Load existing config or start fresh.
     let mut config: HashMap<String, bool> =
         match db::get_setting(pool, "discover_scan_roots_config").await? {
@@ -858,7 +1371,10 @@ pub async fn set_scan_root_enabled(
             None => HashMap::new(),
         };
 
-    config.insert(path, enabled);
+    let normalized_path = normalize_scan_root_path(&path);
+    let normalized_key = normalized_scan_root_key(&normalized_path);
+    config.retain(|existing_path, _| normalized_scan_root_key(existing_path) != normalized_key);
+    config.insert(normalized_path, enabled);
 
     let json = serde_json::to_string(&config)
         .map_err(|e| format!("Failed to serialize scan roots config: {}", e))?;
@@ -1217,6 +1733,34 @@ mod tests {
     }
 
     #[test]
+    fn test_default_scan_roots_start_with_icloud_drive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let roots = default_scan_roots_for_home(&home);
+        let expected = home
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs");
+
+        assert_eq!(roots[0].path, expected.to_string_lossy());
+        assert_eq!(roots[0].label, "iCloud");
+    }
+
+    #[test]
+    fn test_default_scan_roots_excludes_legacy_obsidian_icloud() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let roots = default_scan_roots_for_home(&home);
+
+        assert!(
+            roots
+                .iter()
+                .all(|root| !root.path.contains("iCloud~md~obsidian")),
+            "legacy Obsidian iCloud container should not be a default scan root"
+        );
+    }
+
+    #[test]
     fn test_scan_root_exists_matches_filesystem() {
         let roots = default_scan_roots();
         for root in &roots {
@@ -1390,6 +1934,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scan_root_for_projects_finds_category_nested_platform_skills() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+
+        let project_dir = tmp.path().join("hermes-project");
+        let skill_dir = project_dir.join(".hermes/skills/mlops/evaluation/weights-and-biases");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: weights-and-biases\ndescription: Hermes category skill\n---\n",
+        )
+        .unwrap();
+
+        let patterns = vec![(
+            "hermes".to_string(),
+            "Hermes".to_string(),
+            PathBuf::from(".hermes/skills"),
+        )];
+
+        let projects = scan_root_for_projects(tmp.path(), &patterns, &central_dir);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_name, "hermes-project");
+        assert_eq!(projects[0].skills.len(), 1);
+        assert_eq!(projects[0].skills[0].platform_id, "hermes");
+        assert_eq!(
+            projects[0].skills[0].id,
+            "hermes__hermes-project__weights-and-biases"
+        );
+        assert!(projects[0].skills[0]
+            .dir_path
+            .contains(".hermes/skills/mlops/evaluation/weights-and-biases"));
+    }
+
+    #[tokio::test]
     async fn test_obsidian_exact_vault_root_discovers_vault_skills() {
         let tmp = tempfile::TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
@@ -1423,14 +2003,197 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_scan_roots_merges_obsidian_icloud_and_custom_roots() {
+    async fn test_obsidian_registry_limits_allowed_vaults() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp
+            .path()
+            .join("Library/Mobile Documents/com~apple~CloudDocs");
+        let happy = root.join("happy-geek");
+        let make_money = root.join("make-money");
+        let wiznote = root.join("wiznote-bak");
+        let unregistered = root.join("0412");
+        for vault in [&happy, &make_money, &wiznote, &unregistered] {
+            std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        }
+
+        let registry_path = tmp.path().join("obsidian.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::json!({
+                "vaults": {
+                    "happy": { "path": happy.to_string_lossy() },
+                    "money": { "path": make_money.to_string_lossy() },
+                    "wiz": { "path": wiznote.to_string_lossy() }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let root_scan = ScanRoot {
+            path: root.to_string_lossy().to_string(),
+            label: "iCloud".to_string(),
+            exists: true,
+            enabled: true,
+        };
+
+        let allowed =
+            allowed_obsidian_vault_paths_for_roots_with_registry(&[&root_scan], &registry_path);
+        let mut names: Vec<_> = allowed
+            .iter()
+            .map(|path| file_name_or_unknown(Path::new(path)))
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["happy-geek", "make-money", "wiznote-bak"]);
+        assert!(!names.contains(&"0412".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_registry_prefers_icloud_container_over_documents_vaults() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let obsidian_parent = tmp
+            .path()
+            .join("Library/Mobile Documents/iCloud~md~obsidian/Documents");
+        let happy = obsidian_parent.join("happy-geek");
+        let make_money = obsidian_parent.join("make-money");
+        let wiznote = obsidian_parent.join("wiznote-bak");
+        let orbit = tmp.path().join("Documents/Github/OrbitOS-vault");
+        let cursor_project = tmp.path().join("Documents/CursorProjects/0412");
+        for vault in [&happy, &make_money, &wiznote, &orbit, &cursor_project] {
+            std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        }
+
+        let registry_path = tmp.path().join("obsidian.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::json!({
+                "vaults": {
+                    "happy": { "path": happy.to_string_lossy() },
+                    "money": { "path": make_money.to_string_lossy() },
+                    "wiz": { "path": wiznote.to_string_lossy() },
+                    "orbit": { "path": orbit.to_string_lossy() },
+                    "cursor": { "path": cursor_project.to_string_lossy() }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let root_scan = ScanRoot {
+            path: tmp.path().to_string_lossy().to_string(),
+            label: "home".to_string(),
+            exists: true,
+            enabled: true,
+        };
+
+        let allowed =
+            allowed_obsidian_vault_paths_for_roots_with_registry(&[&root_scan], &registry_path);
+        let mut names: Vec<_> = allowed
+            .iter()
+            .map(|path| file_name_or_unknown(Path::new(path)))
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["happy-geek", "make-money", "wiznote-bak"]);
+    }
+
+    #[tokio::test]
+    async fn test_obsidian_vault_list_hides_vaults_without_skills() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let obsidian_parent = tmp
+            .path()
+            .join("Library/Mobile Documents/iCloud~md~obsidian/Documents");
+        let happy = obsidian_parent.join("happy-geek");
+        let make_money = obsidian_parent.join("make-money");
+        let wiznote = obsidian_parent.join("wiznote-bak");
+        for vault in [&happy, &make_money, &wiznote] {
+            std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        }
+        std::fs::create_dir_all(&central_dir).unwrap();
+        create_skill(
+            &make_money.join(".agents/skills"),
+            "money-researcher",
+            "Money Researcher",
+            "Only populated vault",
+        );
+
+        let allowed: HashSet<String> = [&happy, &make_money, &wiznote]
+            .into_iter()
+            .map(|path| normalized_scan_root_key(&path.to_string_lossy()))
+            .collect();
+        let vaults = obsidian_vaults_from_allowed_paths(&allowed, &central_dir);
+        let names: Vec<_> = vaults.iter().map(|vault| vault.name.as_str()).collect();
+
+        assert_eq!(names, vec!["make-money"]);
+        assert_eq!(vaults[0].skill_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_project_scan_fallback_uses_only_direct_icloud_vault_children() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp
+            .path()
+            .join("Library/Mobile Documents/com~apple~CloudDocs");
+        let central_dir = tmp.path().join("central");
+        let happy = root.join("happy-geek");
+        let nested = root.join("CursorProjects").join("0412");
+        std::fs::create_dir_all(happy.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(nested.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(&central_dir).unwrap();
+        create_skill(
+            &happy.join(".agents/skills"),
+            "happy-skill",
+            "Happy Skill",
+            "Allowed direct child vault",
+        );
+        create_skill(
+            &nested.join(".agents/skills"),
+            "nested-skill",
+            "Nested Skill",
+            "Not a direct iCloud child vault",
+        );
+
+        let pool = setup_test_db().await;
+        let roots = vec![ScanRoot {
+            path: root.to_string_lossy().to_string(),
+            label: "iCloud".to_string(),
+            exists: true,
+            enabled: true,
+        }];
+
+        let result = start_project_scan_impl(&pool, roots, &central_dir, |_| {})
+            .await
+            .unwrap();
+        let project_names: Vec<_> = result
+            .projects
+            .iter()
+            .map(|project| project.project_name.as_str())
+            .collect();
+
+        assert_eq!(project_names, vec!["0412", "happy-geek"]);
+        assert_eq!(result.total_skills, 2);
+        let happy_project = result
+            .projects
+            .iter()
+            .find(|project| project.project_name == "happy-geek")
+            .unwrap();
+        let nested_project = result
+            .projects
+            .iter()
+            .find(|project| project.project_name == "0412")
+            .unwrap();
+        assert_eq!(happy_project.skills[0].platform_id, OBSIDIAN_PLATFORM_ID);
+        assert_ne!(nested_project.skills[0].platform_id, OBSIDIAN_PLATFORM_ID);
+    }
+
+    #[tokio::test]
+    async fn test_get_scan_roots_merges_icloud_drive_and_custom_roots() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         let icloud_root = home
             .join("Library")
             .join("Mobile Documents")
-            .join("iCloud~md~obsidian")
-            .join("Documents");
+            .join("com~apple~CloudDocs");
         let custom_active = tmp.path().join("custom-active-vault");
         let custom_inactive = tmp.path().join("custom-inactive-vault");
         std::fs::create_dir_all(&icloud_root).unwrap();
@@ -1482,7 +2245,7 @@ mod tests {
             1,
             "default iCloud root and custom duplicate should collapse"
         );
-        assert_eq!(icloud_matches[0].label, "Obsidian iCloud");
+        assert_eq!(icloud_matches[0].label, "iCloud");
         assert!(icloud_matches[0].exists);
         assert!(
             !icloud_matches[0].enabled,
@@ -1510,6 +2273,232 @@ mod tests {
                 .iter()
                 .all(|root| !root.path.ends_with(".claude/skills")),
             "built-in agent scan directory rows must not be merged into Discover roots"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_normalizes_quoted_custom_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs")
+            .join("make-money");
+        std::fs::create_dir_all(&vault).unwrap();
+
+        let pool = setup_test_db().await;
+        let quoted_path = format!("'{}'", vault.to_string_lossy());
+        db::add_scan_directory(&pool, &quoted_path, None)
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, vault.to_string_lossy());
+        assert_eq!(roots[0].label, "make-money");
+        assert!(roots[0].exists);
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_filters_custom_child_of_default_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let icloud = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs");
+        let child = icloud.join("make-money");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let pool = setup_test_db().await;
+        db::add_scan_directory(&pool, &child.to_string_lossy(), Some("make-money"))
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(
+            &pool,
+            vec![ScanRoot {
+                path: icloud.to_string_lossy().to_string(),
+                label: "iCloud".to_string(),
+                exists: true,
+                enabled: true,
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, icloud.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_filters_custom_child_of_custom_parent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("workspace");
+        let child = parent.join("nested project");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let pool = setup_test_db().await;
+        db::add_scan_directory(&pool, &parent.to_string_lossy(), Some("Workspace"))
+            .await
+            .unwrap();
+        let quoted_child = format!("'{}'", child.to_string_lossy());
+        db::add_scan_directory(&pool, &quoted_child, Some("Nested Project"))
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, parent.to_string_lossy());
+        assert_eq!(roots[0].label, "Workspace");
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_filters_legacy_obsidian_icloud_custom_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let legacy_parent = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("iCloud~md~obsidian")
+            .join("Documents");
+        let legacy_child = legacy_parent.join("make-money");
+        std::fs::create_dir_all(&legacy_child).unwrap();
+
+        let pool = setup_test_db().await;
+        db::add_scan_directory(
+            &pool,
+            &legacy_parent.to_string_lossy(),
+            Some("Obsidian iCloud"),
+        )
+        .await
+        .unwrap();
+        let quoted_child = format!("'{}'", legacy_child.to_string_lossy());
+        db::add_scan_directory(&pool, &quoted_child, Some("make-money"))
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+
+        assert!(
+            roots.is_empty(),
+            "legacy Obsidian iCloud roots and their children should be hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_unescapes_shell_escaped_spaces() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs")
+            .join("skills");
+        std::fs::create_dir_all(&vault).unwrap();
+
+        let pool = setup_test_db().await;
+        let escaped_path = vault
+            .to_string_lossy()
+            .replace("Mobile Documents", "Mobile\\ Documents");
+        db::add_scan_directory(&pool, &escaped_path, Some("Escaped iCloud"))
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, vault.to_string_lossy());
+        assert_eq!(roots[0].label, "Escaped iCloud");
+        assert!(roots[0].exists);
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_preserves_apostrophes_inside_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join("Bob's Vault");
+        std::fs::create_dir_all(&vault).unwrap();
+
+        let pool = setup_test_db().await;
+        db::add_scan_directory(&pool, &vault.to_string_lossy(), None)
+            .await
+            .unwrap();
+
+        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, vault.to_string_lossy());
+        assert_eq!(roots[0].label, "Bob's Vault");
+        assert!(roots[0].exists);
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_roots_applies_quoted_persisted_config_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let icloud = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs");
+        std::fs::create_dir_all(&icloud).unwrap();
+        let icloud_path = icloud.to_string_lossy().to_string();
+
+        let pool = setup_test_db().await;
+        let mut config = HashMap::new();
+        config.insert(format!("'{}'", icloud_path), false);
+        db::set_setting(
+            &pool,
+            "discover_scan_roots_config",
+            &serde_json::to_string(&config).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let roots = build_scan_roots(
+            &pool,
+            vec![ScanRoot {
+                path: icloud_path.clone(),
+                label: "iCloud".to_string(),
+                exists: true,
+                enabled: true,
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(roots[0].path, icloud_path);
+        assert!(!roots[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_set_scan_root_enabled_writes_normalized_config_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let icloud = tmp
+            .path()
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs");
+        std::fs::create_dir_all(&icloud).unwrap();
+        let icloud_path = icloud.to_string_lossy().to_string();
+
+        let pool = setup_test_db().await;
+        super::set_scan_root_enabled_impl(&pool, format!("'{}'", icloud_path), false)
+            .await
+            .unwrap();
+
+        let json = db::get_setting(&pool, "discover_scan_roots_config")
+            .await
+            .unwrap()
+            .expect("config should be persisted");
+        let config: HashMap<String, bool> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.get(&icloud_path), Some(&false));
+        assert!(
+            !config.contains_key(&format!("'{}'", icloud_path)),
+            "quoted shell path must not be persisted as the config key"
         );
     }
 
@@ -2064,11 +3053,20 @@ mod tests {
         )
         .await
         .unwrap();
-        let roots = build_scan_roots(&pool, vec![]).await.unwrap();
-        assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].path, CROSS_AREA_FIXTURE_PARENT_PATH);
-        assert!(roots[0].enabled);
-        assert!(roots[0].exists);
+        let roots = vec![
+            ScanRoot {
+                path: CROSS_AREA_FIXTURE_VAULT_PATH.to_string(),
+                label: CROSS_AREA_FIXTURE_VAULT_NAME.to_string(),
+                exists: true,
+                enabled: true,
+            },
+            ScanRoot {
+                path: ordinary_project.to_string_lossy().to_string(),
+                label: "ordinary-project".to_string(),
+                exists: true,
+                enabled: true,
+            },
+        ];
 
         let before_manifest = vault_manifest(&vault_dir);
         let result = start_project_scan_impl(&pool, roots.clone(), &central_dir, |_| {})
@@ -2954,24 +3952,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_platform_skill_patterns_includes_all_non_central_agents() {
+    async fn test_platform_skill_patterns_dedupes_shared_paths_and_excludes_central() {
         let pool = setup_test_db().await;
         let patterns = platform_skill_patterns(&pool);
 
-        // Should have entries for all non-central agents.
-        let central_agents: Vec<_> = db::builtin_agents()
-            .iter()
-            .filter(|a| a.id != "central")
-            .map(|a| a.id.clone())
-            .collect();
+        assert!(
+            !patterns.iter().any(|(id, _, _)| id == "central"),
+            "central must not be treated as a Discover platform pattern"
+        );
+        assert!(
+            patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".agents/skills")),
+            "the shared .agents/skills pattern should be discoverable once"
+        );
 
-        for agent_id in &central_agents {
+        let mut seen_paths = HashSet::new();
+        for (_, _, rel_path) in &patterns {
             assert!(
-                patterns.iter().any(|(id, _, _)| id == agent_id),
-                "agent '{}' should appear in platform skill patterns",
-                agent_id
+                seen_paths.insert(rel_path.clone()),
+                "duplicate platform pattern path {:?}",
+                rel_path
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_platform_skill_patterns_prefer_project_skills_dir() {
+        let pool = setup_test_db().await;
+        let patterns = platform_skill_patterns(&pool);
+        let by_id: HashMap<&str, &PathBuf> = patterns
+            .iter()
+            .map(|(id, _, rel_path)| (id.as_str(), rel_path))
+            .collect();
+
+        assert_eq!(by_id.get("openclaw"), Some(&&PathBuf::from("skills")));
+        assert_eq!(
+            by_id.get("windsurf"),
+            Some(&&PathBuf::from(".windsurf/skills"))
+        );
+        assert_eq!(by_id.get("cortex"), Some(&&PathBuf::from(".cortex/skills")));
+        assert_eq!(by_id.get("crush"), Some(&&PathBuf::from(".crush/skills")));
+        assert_eq!(by_id.get("devin"), Some(&&PathBuf::from(".devin/skills")));
+        assert_eq!(by_id.get("pi"), Some(&&PathBuf::from(".pi/skills")));
+
+        assert!(
+            patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".trae/skills")),
+            "Trae CN shares the project .trae/skills path instead of using .trae-cn/skills"
+        );
+        assert!(
+            !patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".trae-cn/skills")),
+            "Discover must not derive Trae CN project scans from its global root"
+        );
+        assert!(
+            !patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".snowflake/cortex/skills")),
+            "Discover must not derive Cortex project scans from its global root"
+        );
+        assert!(
+            !patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".config/crush/skills")),
+            "Discover must not derive Crush project scans from its global root"
+        );
+        assert!(
+            !patterns
+                .iter()
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".config/devin/skills")),
+            "Discover must not derive Devin project scans from its global root"
+        );
     }
 
     #[tokio::test]
@@ -3644,7 +4698,7 @@ mod tests {
             "old description",
         );
 
-        let roots = vec![scan_root(tmp.path(), true, true)];
+        let roots = vec![scan_root(&vault_dir, true, true)];
         let first = start_project_scan_impl(&pool, roots.clone(), &central_dir, |_| {})
             .await
             .unwrap();

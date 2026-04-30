@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import { AgentWithStatus, BatchInstallResult, SkillWithLinks } from "@/types";
+import {
+  AgentWithStatus,
+  BatchInstallResult,
+  DeleteCentralSkillOptions,
+  DeleteCentralSkillResult,
+  SkillWithLinks,
+} from "@/types";
 
 export const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   {
@@ -45,6 +51,7 @@ export const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     created_at: "2026-04-17T00:00:00.000Z",
     updated_at: "2026-04-17T00:00:00.000Z",
     linked_agents: ["claude-code"],
+    read_only_agents: [],
   },
 ];
 
@@ -55,6 +62,7 @@ interface CentralSkillsState {
   agents: AgentWithStatus[];
   isLoading: boolean;
   isInstalling: boolean;
+  deletingSkillId: string | null;
   /** Agent ID currently being toggled (null = idle). */
   togglingAgentId: string | null;
   error: string | null;
@@ -66,6 +74,10 @@ interface CentralSkillsState {
     agentIds: string[],
     method: string
   ) => Promise<BatchInstallResult>;
+  deleteCentralSkill: (
+    skillId: string,
+    options: DeleteCentralSkillOptions
+  ) => Promise<DeleteCentralSkillResult>;
   togglePlatformLink: (skillId: string, agentId: string) => Promise<void>;
 }
 
@@ -76,6 +88,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   agents: [],
   isLoading: false,
   isInstalling: false,
+  deletingSkillId: null,
   togglingAgentId: null,
   error: null,
 
@@ -129,6 +142,42 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   },
 
   /**
+   * Delete a skill from the Central Skills root.
+   * By default the backend refuses linked skills; callers must explicitly pass
+   * cascadeUninstall=true after showing the broader-impact confirmation.
+   */
+  deleteCentralSkill: async (skillId, options) => {
+    set({ deletingSkillId: skillId, error: null });
+    if (!isTauriRuntime()) {
+      const result: DeleteCentralSkillResult = {
+        skillId,
+        removedCanonicalPath: `~/.agents/skills/${skillId}`,
+        uninstalledAgents: [],
+        skippedReadOnlyAgents: [],
+      };
+      set((state) => ({
+        skills: state.skills.filter((skill) => skill.id !== skillId),
+        deletingSkillId: null,
+      }));
+      return result;
+    }
+    try {
+      const result = await invoke<DeleteCentralSkillResult>("delete_central_skill", {
+        skillId,
+        options,
+      });
+
+      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      set({ skills, deletingSkillId: null });
+
+      return result;
+    } catch (err) {
+      set({ error: String(err), deletingSkillId: null });
+      throw err;
+    }
+  },
+
+  /**
    * Toggle a single platform link for a skill.
    * If linked, uninstalls; if not linked, installs via the backend default method.
    * Refreshes the skill list afterward so linked_agents updates.
@@ -138,6 +187,12 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     try {
       const skill = get().skills.find((s) => s.id === skillId);
       const isLinked = skill?.linked_agents.includes(agentId) ?? false;
+      const isReadOnly = skill?.read_only_agents?.includes(agentId) ?? false;
+
+      if (isReadOnly) {
+        set({ togglingAgentId: null });
+        return;
+      }
 
       if (isLinked) {
         await invoke("uninstall_skill_from_agent", { skillId, agentId });

@@ -61,6 +61,7 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
 function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   const { t, i18n } = useTranslation();
   const isPlugin = originKind === "plugin";
+  const isCompatibility = originKind === "compatibility";
 
   return (
     <span
@@ -68,6 +69,8 @@ function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
         "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
         isPlugin
           ? "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300"
+          : isCompatibility
+            ? "bg-violet-500/10 text-violet-700 ring-violet-500/20 dark:text-violet-300"
           : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
       )}
     >
@@ -75,6 +78,10 @@ function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
         ? t("platform.originPlugin", {
             defaultValue: i18n.language.startsWith("zh") ? "插件来源" : "Plugin source",
           })
+        : isCompatibility
+          ? t("platform.originCompatibility", {
+              defaultValue: i18n.language.startsWith("zh") ? "兼容来源" : "Compatibility source",
+            })
         : t("platform.originUser", {
             defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",
           })}
@@ -101,27 +108,44 @@ interface PlatformToggleIconProps {
   agent: AgentWithStatus;
   skillName: string;
   isInstalled: boolean;
+  isReadOnly: boolean;
   isLoading: boolean;
   onToggle: () => void;
 }
 
-function PlatformToggleIcon({ agent, skillName, isInstalled, isLoading, onToggle }: PlatformToggleIconProps) {
+function PlatformToggleIcon({
+  agent,
+  skillName,
+  isInstalled,
+  isReadOnly,
+  isLoading,
+  onToggle,
+}: PlatformToggleIconProps) {
   const { t } = useTranslation();
   return (
     <button
       className={cn(
-        "p-1.5 rounded-md transition-colors cursor-pointer",
+        "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer",
         isInstalled
-          ? "text-primary hover:bg-primary/15"
+          ? "text-primary hover:bg-primary/10"
           : "text-muted-foreground/40 hover:bg-muted/60 hover:text-muted-foreground",
+        isReadOnly && "cursor-default hover:bg-transparent",
         isLoading && "animate-pulse pointer-events-none"
       )}
       title={`${agent.display_name}${isInstalled ? ` — ${t("central.linked")}` : ""}`}
       aria-label={t("central.toggleInstallLabel", { platform: agent.display_name, skill: skillName })}
-      disabled={isLoading}
+      aria-pressed={isInstalled}
+      disabled={isLoading || isReadOnly}
       onClick={onToggle}
     >
-      <PlatformIcon agentId={agent.id} className="size-4 shrink-0" size={16} />
+      <PlatformIcon
+        agentId={agent.id}
+        className={cn(
+          "size-4 shrink-0 transition-all",
+          isInstalled ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
+        )}
+        size={16}
+      />
     </button>
   );
 }
@@ -567,12 +591,14 @@ export function SkillDetailView({
   const installationMap = new Map<string, SkillInstallation>(
     (detail?.installations ?? []).map((inst) => [inst.agent_id, inst])
   );
+  const readOnlyAgentIds = new Set(detail?.read_only_agents ?? []);
   const skillCollections = detail?.collections ?? [];
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   async function handleToggle(agentId: string) {
     if (!skillId || detail?.is_read_only) return;
+    if (readOnlyAgentIds.has(agentId)) return;
     const isInstalled = installationMap.has(agentId);
     try {
       if (isInstalled) {
@@ -1028,8 +1054,8 @@ export function SkillDetailView({
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.readOnlyDesc", {
                               defaultValue: i18n.language.startsWith("zh")
-                                ? "插件安装的副本仅供查看，不能在这里安装、卸载或调整技能集。"
-                                : "Plugin-installed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
+                                ? "只读观测副本仅供查看，不能在这里安装、卸载或调整技能集。"
+                                : "Read-only observed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
                             })}
                           </p>
                         ) : detail.source_kind === "user" ? (
@@ -1087,8 +1113,8 @@ export function SkillDetailView({
                         <p className="text-xs leading-relaxed text-muted-foreground">
                           {t("detail.readOnlyInstallBlocked", {
                             defaultValue: i18n.language.startsWith("zh")
-                              ? "插件来源的只读副本不可安装或卸载。"
-                              : "Install and uninstall are unavailable for read-only plugin copies.",
+                              ? "只读观测副本不可安装或卸载。"
+                              : "Install and uninstall are unavailable for read-only observed copies.",
                           })}
                         </p>
                       ) : targetAgents.length === 0 ? (
@@ -1108,7 +1134,8 @@ export function SkillDetailView({
                                     key={agent.id}
                                     agent={agent}
                                     skillName={detail.name}
-                                    isInstalled={installationMap.has(agent.id)}
+                                    isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
+                                    isReadOnly={readOnlyAgentIds.has(agent.id)}
                                     isLoading={installingAgentId === agent.id}
                                     onToggle={() => handleToggle(agent.id)}
                                   />
@@ -1127,7 +1154,8 @@ export function SkillDetailView({
                                     key={agent.id}
                                     agent={agent}
                                     skillName={detail.name}
-                                    isInstalled={installationMap.has(agent.id)}
+                                    isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
+                                    isReadOnly={readOnlyAgentIds.has(agent.id)}
                                     isLoading={installingAgentId === agent.id}
                                     onToggle={() => handleToggle(agent.id)}
                                   />
@@ -1147,8 +1175,8 @@ export function SkillDetailView({
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {t("detail.readOnlyCollectionsBlocked", {
                           defaultValue: i18n.language.startsWith("zh")
-                            ? "插件来源的只读副本不可调整技能集。"
-                            : "Collection management is unavailable for read-only plugin copies.",
+                            ? "只读观测副本不可调整技能集。"
+                            : "Collection management is unavailable for read-only observed copies.",
                         })}
                       </p>
                     ) : (

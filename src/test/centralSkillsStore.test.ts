@@ -74,6 +74,7 @@ describe("centralSkillsStore", () => {
       agents: [],
       isLoading: false,
       isInstalling: false,
+      deletingSkillId: null,
       togglingAgentId: null,
       error: null,
     });
@@ -89,6 +90,7 @@ describe("centralSkillsStore", () => {
     expect(state.isLoading).toBe(false);
     expect(state.isInstalling).toBe(false);
     expect(state.togglingAgentId).toBeNull();
+    expect(state.deletingSkillId).toBeNull();
     expect(state.error).toBeNull();
   });
 
@@ -226,6 +228,48 @@ describe("centralSkillsStore", () => {
     expect(state.isInstalling).toBe(false);
   });
 
+  // ── deleteCentralSkill ───────────────────────────────────────────────────
+
+  it("calls delete_central_skill then refreshes central skills", async () => {
+    const result = {
+      skillId: "code-reviewer",
+      removedCanonicalPath: "/Users/test/.agents/skills/code-reviewer",
+      uninstalledAgents: [],
+      skippedReadOnlyAgents: [],
+    };
+    const updatedSkills = [mockSkills[0]];
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(result)
+      .mockResolvedValueOnce(updatedSkills);
+
+    const deleteResult = await useCentralSkillsStore
+      .getState()
+      .deleteCentralSkill("code-reviewer", { cascadeUninstall: false });
+
+    expect(invoke).toHaveBeenCalledWith("delete_central_skill", {
+      skillId: "code-reviewer",
+      options: { cascadeUninstall: false },
+    });
+    expect(invoke).toHaveBeenCalledWith("get_central_skills");
+    expect(deleteResult).toEqual(result);
+    expect(useCentralSkillsStore.getState().skills).toEqual(updatedSkills);
+    expect(useCentralSkillsStore.getState().deletingSkillId).toBeNull();
+  });
+
+  it("sets error and re-throws when deleteCentralSkill fails", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("delete failed"));
+
+    await expect(
+      useCentralSkillsStore
+        .getState()
+        .deleteCentralSkill("code-reviewer", { cascadeUninstall: false })
+    ).rejects.toThrow("delete failed");
+
+    const state = useCentralSkillsStore.getState();
+    expect(state.error).toContain("delete failed");
+    expect(state.deletingSkillId).toBeNull();
+  });
+
   // ── togglePlatformLink ────────────────────────────────────────────────────
 
   it("calls uninstall when skill is already linked to the agent", async () => {
@@ -279,6 +323,25 @@ describe("centralSkillsStore", () => {
     const state = useCentralSkillsStore.getState();
     expect(state.skills).toEqual(updatedSkills);
     expect(state.togglingAgentId).toBeNull();
+  });
+
+  it("does not uninstall read-only compatibility observations", async () => {
+    useCentralSkillsStore.setState({
+      skills: [
+        {
+          ...mockSkills[1],
+          linked_agents: [],
+          read_only_agents: ["factory-droid"],
+        },
+      ],
+    });
+
+    await useCentralSkillsStore
+      .getState()
+      .togglePlatformLink("code-reviewer", "factory-droid");
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useCentralSkillsStore.getState().togglingAgentId).toBeNull();
   });
 
   it("sets error and re-throws when togglePlatformLink fails", async () => {

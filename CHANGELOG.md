@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.10.0 - 2026-04-30
+
+Feature release focused on broader platform coverage, Discover reliability, and denser Central Skills platform management.
+
+### Features
+
+- Add expanded built-in platform directory support for AI coding tools and project-level skill discovery.
+- Add Obsidian vault discovery surfaces and sidebar navigation.
+- Add Linux desktop bundle metadata and templates for Tauri packaging.
+- Add a Central Skills platform manager drawer for searching and managing long-tail platform installs.
+
+### Improvements
+
+- Keep Lobster platforms directly visible on Central Skill cards while showing only high-frequency Coding platforms inline.
+- Improve platform icon coverage with additional LobeHub mappings and distinct fallback monograms.
+- Clarify shared/read-only platform availability in install and platform-management flows.
+- Refine CI and desktop release workflow configuration for the expanded package matrix.
+
+### Fixes
+
+- Prefer explicit project skill directory mappings during Discover scans.
+- Avoid falsely classifying shared `.agents/skills` folders as project-specific platform skills.
+- Keep platform link toggles, rescans, and Central Skill deletion flows consistent after UI actions.
+
+### Tests
+
+- Add Rust and frontend coverage for expanded platform registry mappings, Discover project matching, platform icons, Central Skills platform management, and Obsidian surfaces.
+
 ## 0.9.1 - 2026-04-23
 
 Maintenance release focused on full-path display consistency and small README polish.

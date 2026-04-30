@@ -4,7 +4,10 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
     FromRow, Row, SqlitePool,
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 use uuid::Uuid;
 
 use crate::path_utils::{path_to_string, resolve_home_dir};
@@ -580,311 +583,484 @@ async fn ensure_column(
     Ok(())
 }
 
+pub const UNIVERSAL_AGENTS_SKILLS_AGENT_IDS: &[&str] = &[
+    "amp",
+    "antigravity",
+    "cline",
+    "codex",
+    "cursor",
+    "deep-agents",
+    "dexto",
+    "firebender",
+    "gemini-cli",
+    "copilot",
+    "kimi-code-cli",
+    "opencode",
+    "warp",
+];
+
+pub fn agent_supports_universal_agents_skills(agent_id: &str) -> bool {
+    UNIVERSAL_AGENTS_SKILLS_AGENT_IDS.contains(&agent_id)
+}
+
 /// Returns the list of built-in agents using the current user's home directory.
 pub fn builtin_agents() -> Vec<Agent> {
     let home = resolve_home_dir();
     let in_home = |relative: &str| path_to_string(&home.join(relative));
+    let agent = |id: &str,
+                 display_name: &str,
+                 category: &str,
+                 global_relative: &str,
+                 project_relative: Option<&str>,
+                 icon_name: &str| {
+        Agent {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            category: category.to_string(),
+            global_skills_dir: in_home(global_relative),
+            project_skills_dir: project_relative.map(|value| value.to_string()),
+            icon_name: Some(icon_name.to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        }
+    };
+
     vec![
         // ── Coding platforms ─────────────────────────────────────────────────
-        Agent {
-            id: "claude-code".to_string(),
-            display_name: "Claude Code".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".claude/skills"),
-            project_skills_dir: None,
-            icon_name: Some("claude".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "codex".to_string(),
-            display_name: "Codex CLI".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".agents/skills"),
-            project_skills_dir: None,
-            icon_name: Some("codex".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "cursor".to_string(),
-            display_name: "Cursor".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".cursor/skills"),
-            project_skills_dir: None,
-            icon_name: Some("cursor".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "gemini-cli".to_string(),
-            display_name: "Gemini CLI".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".gemini/skills"),
-            project_skills_dir: None,
-            icon_name: Some("gemini".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "trae".to_string(),
-            display_name: "Trae".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".trae/skills"),
-            project_skills_dir: None,
-            icon_name: Some("trae".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "factory-droid".to_string(),
-            display_name: "Factory Droid".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".factory/skills"),
-            project_skills_dir: None,
-            icon_name: Some("factory".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "junie".to_string(),
-            display_name: "Junie".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".junie/skills"),
-            project_skills_dir: None,
-            icon_name: Some("junie".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "qwen".to_string(),
-            display_name: "Qwen".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".qwen/skills"),
-            project_skills_dir: None,
-            icon_name: Some("qwen".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "trae-cn".to_string(),
-            display_name: "Trae CN".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".trae-cn/skills"),
-            project_skills_dir: None,
-            icon_name: Some("trae-cn".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "windsurf".to_string(),
-            display_name: "Windsurf".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".windsurf/skills"),
-            project_skills_dir: None,
-            icon_name: Some("windsurf".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "qoder".to_string(),
-            display_name: "Qoder".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".qoder/skills"),
-            project_skills_dir: None,
-            icon_name: Some("qoder".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "augment".to_string(),
-            display_name: "Augment".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".augment/skills"),
-            project_skills_dir: None,
-            icon_name: Some("augment".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "opencode".to_string(),
-            display_name: "OpenCode".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".opencode/skills"),
-            project_skills_dir: None,
-            icon_name: Some("opencode".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "kilocode".to_string(),
-            display_name: "KiloCode".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".kilocode/skills"),
-            project_skills_dir: None,
-            icon_name: Some("kilocode".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "ob1".to_string(),
-            display_name: "OB1".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".ob1/skills"),
-            project_skills_dir: None,
-            icon_name: Some("ob1".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "amp".to_string(),
-            display_name: "Amp".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".amp/skills"),
-            project_skills_dir: None,
-            icon_name: Some("amp".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "kiro".to_string(),
-            display_name: "Kiro".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".kiro/skills"),
-            project_skills_dir: None,
-            icon_name: Some("kiro".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "codebuddy".to_string(),
-            display_name: "CodeBuddy".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".codebuddy/skills"),
-            project_skills_dir: None,
-            icon_name: Some("codebuddy".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "hermes".to_string(),
-            display_name: "Hermes".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".hermes/skills"),
-            project_skills_dir: None,
-            icon_name: Some("hermes".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "copilot".to_string(),
-            display_name: "Copilot".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".copilot/skills"),
-            project_skills_dir: None,
-            icon_name: Some("copilot".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "aider".to_string(),
-            display_name: "Aider".to_string(),
-            category: "coding".to_string(),
-            global_skills_dir: in_home(".aider/skills"),
-            project_skills_dir: None,
-            icon_name: Some("aider".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
+        agent(
+            "claude-code",
+            "Claude Code",
+            "coding",
+            ".claude/skills",
+            Some(".claude/skills"),
+            "claude",
+        ),
+        agent(
+            "codex",
+            "Codex CLI",
+            "coding",
+            ".agents/skills",
+            None,
+            "codex",
+        ),
+        agent(
+            "cursor",
+            "Cursor",
+            "coding",
+            ".cursor/skills",
+            None,
+            "cursor",
+        ),
+        agent(
+            "antigravity",
+            "Antigravity",
+            "coding",
+            ".agents/skills",
+            None,
+            "antigravity",
+        ),
+        agent("cline", "Cline", "coding", ".agents/skills", None, "cline"),
+        agent(
+            "deep-agents",
+            "Deep Agents",
+            "coding",
+            ".agents/skills",
+            None,
+            "deep-agents",
+        ),
+        agent("dexto", "Dexto", "coding", ".agents/skills", None, "dexto"),
+        agent(
+            "firebender",
+            "Firebender",
+            "coding",
+            ".agents/skills",
+            None,
+            "firebender",
+        ),
+        agent(
+            "gemini-cli",
+            "Gemini CLI",
+            "coding",
+            ".gemini/skills",
+            None,
+            "gemini",
+        ),
+        agent(
+            "kimi-code-cli",
+            "Kimi Code CLI",
+            "coding",
+            ".agents/skills",
+            None,
+            "kimi-code-cli",
+        ),
+        agent(
+            "aider-desk",
+            "AiderDesk",
+            "coding",
+            ".aider-desk/skills",
+            Some(".aider-desk/skills"),
+            "aider-desk",
+        ),
+        agent(
+            "trae",
+            "Trae",
+            "coding",
+            ".trae/skills",
+            Some(".trae/skills"),
+            "trae",
+        ),
+        agent(
+            "factory-droid",
+            "Factory Droid",
+            "coding",
+            ".factory/skills",
+            Some(".factory/skills"),
+            "factory",
+        ),
+        agent(
+            "junie",
+            "Junie",
+            "coding",
+            ".junie/skills",
+            Some(".junie/skills"),
+            "junie",
+        ),
+        agent(
+            "qwen",
+            "Qwen Code",
+            "coding",
+            ".qwen/skills",
+            Some(".qwen/skills"),
+            "qwen",
+        ),
+        agent(
+            "trae-cn",
+            "Trae CN",
+            "coding",
+            ".trae-cn/skills",
+            Some(".trae/skills"),
+            "trae-cn",
+        ),
+        agent(
+            "windsurf",
+            "Windsurf",
+            "coding",
+            ".codeium/windsurf/skills",
+            Some(".windsurf/skills"),
+            "windsurf",
+        ),
+        agent(
+            "qoder",
+            "Qoder",
+            "coding",
+            ".qoder/skills",
+            Some(".qoder/skills"),
+            "qoder",
+        ),
+        agent(
+            "augment",
+            "Augment",
+            "coding",
+            ".augment/skills",
+            Some(".augment/skills"),
+            "augment",
+        ),
+        agent(
+            "opencode",
+            "OpenCode",
+            "coding",
+            ".opencode/skills",
+            None,
+            "opencode",
+        ),
+        agent(
+            "kilocode",
+            "Kilo Code",
+            "coding",
+            ".kilocode/skills",
+            Some(".kilocode/skills"),
+            "kilocode",
+        ),
+        agent("ob1", "OB1", "coding", ".ob1/skills", None, "ob1"),
+        agent("amp", "Amp", "coding", ".amp/skills", None, "amp"),
+        agent(
+            "kiro",
+            "Kiro CLI",
+            "coding",
+            ".kiro/skills",
+            Some(".kiro/skills"),
+            "kiro",
+        ),
+        agent(
+            "codebuddy",
+            "CodeBuddy",
+            "coding",
+            ".codebuddy/skills",
+            Some(".codebuddy/skills"),
+            "codebuddy",
+        ),
+        agent(
+            "bob",
+            "IBM Bob",
+            "coding",
+            ".bob/skills",
+            Some(".bob/skills"),
+            "bob",
+        ),
+        agent(
+            "codearts-agent",
+            "CodeArts Agent",
+            "coding",
+            ".codeartsdoer/skills",
+            Some(".codeartsdoer/skills"),
+            "codearts-agent",
+        ),
+        agent(
+            "codemaker",
+            "Codemaker",
+            "coding",
+            ".codemaker/skills",
+            Some(".codemaker/skills"),
+            "codemaker",
+        ),
+        agent(
+            "codestudio",
+            "Code Studio",
+            "coding",
+            ".codestudio/skills",
+            Some(".codestudio/skills"),
+            "codestudio",
+        ),
+        agent(
+            "command-code",
+            "Command Code",
+            "coding",
+            ".commandcode/skills",
+            Some(".commandcode/skills"),
+            "command-code",
+        ),
+        agent(
+            "continue",
+            "Continue",
+            "coding",
+            ".continue/skills",
+            Some(".continue/skills"),
+            "continue",
+        ),
+        agent(
+            "cortex",
+            "Cortex Code",
+            "coding",
+            ".snowflake/cortex/skills",
+            Some(".cortex/skills"),
+            "cortex",
+        ),
+        agent(
+            "crush",
+            "Crush",
+            "coding",
+            ".config/crush/skills",
+            Some(".crush/skills"),
+            "crush",
+        ),
+        agent(
+            "devin",
+            "Devin for Terminal",
+            "coding",
+            ".config/devin/skills",
+            Some(".devin/skills"),
+            "devin",
+        ),
+        agent(
+            "forgecode",
+            "ForgeCode",
+            "coding",
+            ".forge/skills",
+            Some(".forge/skills"),
+            "forgecode",
+        ),
+        agent(
+            "goose",
+            "Goose",
+            "coding",
+            ".config/goose/skills",
+            Some(".goose/skills"),
+            "goose",
+        ),
+        agent(
+            "iflow-cli",
+            "iFlow CLI",
+            "coding",
+            ".iflow/skills",
+            Some(".iflow/skills"),
+            "iflow-cli",
+        ),
+        agent(
+            "kode",
+            "Kode",
+            "coding",
+            ".kode/skills",
+            Some(".kode/skills"),
+            "kode",
+        ),
+        agent(
+            "mcpjam",
+            "MCPJam",
+            "coding",
+            ".mcpjam/skills",
+            Some(".mcpjam/skills"),
+            "mcpjam",
+        ),
+        agent(
+            "mistral-vibe",
+            "Mistral Vibe",
+            "coding",
+            ".vibe/skills",
+            Some(".vibe/skills"),
+            "mistral-vibe",
+        ),
+        agent(
+            "mux",
+            "Mux",
+            "coding",
+            ".mux/skills",
+            Some(".mux/skills"),
+            "mux",
+        ),
+        agent(
+            "openhands",
+            "OpenHands",
+            "coding",
+            ".openhands/skills",
+            Some(".openhands/skills"),
+            "openhands",
+        ),
+        agent(
+            "pi",
+            "Pi",
+            "coding",
+            ".pi/agent/skills",
+            Some(".pi/skills"),
+            "pi",
+        ),
+        agent(
+            "rovodev",
+            "Rovo Dev",
+            "coding",
+            ".rovodev/skills",
+            Some(".rovodev/skills"),
+            "rovodev",
+        ),
+        agent(
+            "roo",
+            "Roo Code",
+            "coding",
+            ".roo/skills",
+            Some(".roo/skills"),
+            "roo",
+        ),
+        agent(
+            "tabnine-cli",
+            "Tabnine CLI",
+            "coding",
+            ".tabnine/agent/skills",
+            Some(".tabnine/agent/skills"),
+            "tabnine-cli",
+        ),
+        agent(
+            "zencoder",
+            "Zencoder",
+            "coding",
+            ".zencoder/skills",
+            Some(".zencoder/skills"),
+            "zencoder",
+        ),
+        agent(
+            "neovate",
+            "Neovate",
+            "coding",
+            ".neovate/skills",
+            Some(".neovate/skills"),
+            "neovate",
+        ),
+        agent(
+            "pochi",
+            "Pochi",
+            "coding",
+            ".pochi/skills",
+            Some(".pochi/skills"),
+            "pochi",
+        ),
+        agent(
+            "adal",
+            "AdaL",
+            "coding",
+            ".adal/skills",
+            Some(".adal/skills"),
+            "adal",
+        ),
+        agent(
+            "copilot",
+            "GitHub Copilot",
+            "coding",
+            ".copilot/skills",
+            None,
+            "copilot",
+        ),
+        agent("warp", "Warp", "coding", ".agents/skills", None, "warp"),
+        agent("aider", "Aider", "coding", ".aider/skills", None, "aider"),
         // ── Lobster platforms ────────────────────────────────────────────────
-        Agent {
-            id: "openclaw".to_string(),
-            display_name: "OpenClaw".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".openclaw/skills"),
-            project_skills_dir: None,
-            icon_name: Some("openclaw".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "qclaw".to_string(),
-            display_name: "QClaw".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".qclaw/skills"),
-            project_skills_dir: None,
-            icon_name: Some("qclaw".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "easyclaw".to_string(),
-            display_name: "EasyClaw".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".easyclaw/skills"),
-            project_skills_dir: None,
-            icon_name: Some("easyclaw".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "autoclaw".to_string(),
-            display_name: "AutoClaw".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".openclaw-autoclaw/skills"),
-            project_skills_dir: None,
-            icon_name: Some("autoclaw".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
-        Agent {
-            id: "workbuddy".to_string(),
-            display_name: "WorkBuddy".to_string(),
-            category: "lobster".to_string(),
-            global_skills_dir: in_home(".workbuddy/skills-marketplace/skills"),
-            project_skills_dir: None,
-            icon_name: Some("workbuddy".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
+        agent(
+            "hermes",
+            "Hermes",
+            "lobster",
+            ".hermes/skills",
+            None,
+            "hermes",
+        ),
+        agent(
+            "openclaw",
+            "OpenClaw",
+            "lobster",
+            ".openclaw/skills",
+            Some("skills"),
+            "openclaw",
+        ),
+        agent("qclaw", "QClaw", "lobster", ".qclaw/skills", None, "qclaw"),
+        agent(
+            "easyclaw",
+            "EasyClaw",
+            "lobster",
+            ".easyclaw/skills",
+            None,
+            "easyclaw",
+        ),
+        agent(
+            "autoclaw",
+            "AutoClaw",
+            "lobster",
+            ".openclaw-autoclaw/skills",
+            None,
+            "autoclaw",
+        ),
+        agent(
+            "workbuddy",
+            "WorkBuddy",
+            "lobster",
+            ".workbuddy/skills-marketplace/skills",
+            None,
+            "workbuddy",
+        ),
         // ── Central Skills ────────────────────────────────────────────────────
-        Agent {
-            id: "central".to_string(),
-            display_name: "Central Skills".to_string(),
-            category: "central".to_string(),
-            global_skills_dir: in_home(".agents/skills"),
-            project_skills_dir: None,
-            icon_name: Some("central".to_string()),
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: true,
-        },
+        agent(
+            "central",
+            "Central Skills",
+            "central",
+            ".agents/skills",
+            None,
+            "central",
+        ),
     ]
 }
 
@@ -903,13 +1079,31 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
          (id, name, description, file_path, canonical_path, is_central, source, content, scanned_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           name           = excluded.name,
-           description    = excluded.description,
-           file_path      = excluded.file_path,
-           canonical_path = COALESCE(excluded.canonical_path, skills.canonical_path),
+           name           = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.name
+                              ELSE excluded.name
+                            END,
+           description    = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.description
+                              ELSE excluded.description
+                            END,
+           file_path      = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.file_path
+                              ELSE excluded.file_path
+                            END,
+           canonical_path = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.canonical_path
+                              ELSE COALESCE(excluded.canonical_path, skills.canonical_path)
+                            END,
            is_central     = MAX(skills.is_central, excluded.is_central),
-           source         = excluded.source,
-           content        = excluded.content,
+           source         = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.source
+                              ELSE excluded.source
+                            END,
+           content        = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.content
+                              ELSE excluded.content
+                            END,
            scanned_at     = excluded.scanned_at",
     )
     .bind(&skill.id)
@@ -1048,7 +1242,7 @@ pub async fn get_skills_for_agent(
         }
     }
 
-    sqlx::query_as::<_, SkillForAgent>(
+    let mut skills = sqlx::query_as::<_, SkillForAgent>(
         "SELECT s.id,
                 s.id AS row_id,
                 s.name,
@@ -1070,7 +1264,24 @@ pub async fn get_skills_for_agent(
     .bind(agent_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    let installed_ids: HashSet<String> = skills.iter().map(|skill| skill.id.clone()).collect();
+    let observations = get_agent_skill_observations(pool, agent_id).await?;
+    skills.extend(
+        observations
+            .into_iter()
+            .filter(|observation| !installed_ids.contains(&observation.skill_id))
+            .map(observation_to_skill_for_agent),
+    );
+    skills.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.dir_path.cmp(&b.dir_path))
+    });
+
+    Ok(skills)
 }
 
 pub async fn upsert_agent_skill_observation(
@@ -1154,6 +1365,51 @@ pub async fn delete_skill(pool: &DbPool, skill_id: &str) -> Result<(), String> {
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM skills WHERE id = ?")
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Delete all local database state owned by a Central Skill removal.
+///
+/// This intentionally does not delete `discovered_skills`: those rows describe
+/// project-level sources and `is_already_central` is recomputed from the
+/// filesystem when discovery results are loaded.
+pub async fn delete_central_skill_records(
+    pool: &DbPool,
+    skill_id: &str,
+    skill_name: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM skill_installations WHERE skill_id = ?")
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM collection_skills WHERE skill_id = ?")
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM skill_explanations WHERE skill_id = ?")
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE marketplace_skills
+         SET is_installed = 0
+         WHERE name = ? OR name = ? OR id = ? OR id LIKE ?",
+    )
+    .bind(skill_name)
+    .bind(skill_id)
+    .bind(skill_id)
+    .bind(format!("%::{}", skill_id))
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM skills WHERE id = ?")
         .bind(skill_id)
         .execute(pool)
@@ -1339,6 +1595,24 @@ pub async fn get_skill_installations(
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())
+}
+
+pub async fn get_read_only_observed_agent_ids_for_skill(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT agent_id
+         FROM agent_skill_observations
+         WHERE skill_id = ?
+           AND is_read_only = 1
+           AND source_kind = 'compatibility'
+         ORDER BY agent_id",
+    )
+    .bind(skill_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
@@ -1862,14 +2136,24 @@ mod tests {
     async fn test_builtin_agents_seeded() {
         let pool = setup_test_db().await;
         let agents = get_all_agents(&pool).await.unwrap();
-        assert_eq!(agents.len(), 27, "Should have exactly 27 built-in agents");
+        assert_eq!(
+            agents.len(),
+            builtin_agents().len(),
+            "Should have exactly the configured built-in agents"
+        );
 
         let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
         // Coding platforms
         assert!(ids.contains(&"claude-code"));
         assert!(ids.contains(&"codex"));
         assert!(ids.contains(&"cursor"));
+        assert!(ids.contains(&"antigravity"));
+        assert!(ids.contains(&"cline"));
+        assert!(ids.contains(&"deep-agents"));
+        assert!(ids.contains(&"dexto"));
+        assert!(ids.contains(&"firebender"));
         assert!(ids.contains(&"gemini-cli"));
+        assert!(ids.contains(&"kimi-code-cli"));
         assert!(ids.contains(&"trae"));
         assert!(ids.contains(&"factory-droid"));
         assert!(ids.contains(&"junie"));
@@ -1884,8 +2168,35 @@ mod tests {
         assert!(ids.contains(&"amp"));
         assert!(ids.contains(&"kiro"));
         assert!(ids.contains(&"codebuddy"));
+        assert!(ids.contains(&"aider-desk"));
+        assert!(ids.contains(&"bob"));
+        assert!(ids.contains(&"codearts-agent"));
+        assert!(ids.contains(&"codemaker"));
+        assert!(ids.contains(&"codestudio"));
+        assert!(ids.contains(&"command-code"));
+        assert!(ids.contains(&"continue"));
+        assert!(ids.contains(&"cortex"));
+        assert!(ids.contains(&"crush"));
+        assert!(ids.contains(&"devin"));
+        assert!(ids.contains(&"forgecode"));
+        assert!(ids.contains(&"goose"));
+        assert!(ids.contains(&"iflow-cli"));
+        assert!(ids.contains(&"kode"));
+        assert!(ids.contains(&"mcpjam"));
+        assert!(ids.contains(&"mistral-vibe"));
+        assert!(ids.contains(&"mux"));
+        assert!(ids.contains(&"openhands"));
+        assert!(ids.contains(&"pi"));
+        assert!(ids.contains(&"rovodev"));
+        assert!(ids.contains(&"roo"));
+        assert!(ids.contains(&"tabnine-cli"));
+        assert!(ids.contains(&"zencoder"));
+        assert!(ids.contains(&"neovate"));
+        assert!(ids.contains(&"pochi"));
+        assert!(ids.contains(&"adal"));
         assert!(ids.contains(&"hermes"));
         assert!(ids.contains(&"copilot"));
+        assert!(ids.contains(&"warp"));
         assert!(ids.contains(&"aider"));
         // Lobster platforms
         assert!(ids.contains(&"openclaw"));
@@ -1895,6 +2206,164 @@ mod tests {
         assert!(ids.contains(&"workbuddy"));
         // Central
         assert!(ids.contains(&"central"));
+    }
+
+    #[test]
+    fn test_builtin_agents_have_expected_39_platform_skill_dirs() {
+        let home = resolve_home_dir();
+        let agents_by_id: std::collections::HashMap<String, Agent> = builtin_agents()
+            .into_iter()
+            .map(|agent| (agent.id.clone(), agent))
+            .collect();
+
+        let expected = [
+            (
+                "aider-desk",
+                "AiderDesk",
+                ".aider-desk/skills",
+                ".aider-desk/skills",
+            ),
+            ("augment", "Augment", ".augment/skills", ".augment/skills"),
+            ("bob", "IBM Bob", ".bob/skills", ".bob/skills"),
+            (
+                "claude-code",
+                "Claude Code",
+                ".claude/skills",
+                ".claude/skills",
+            ),
+            ("openclaw", "OpenClaw", ".openclaw/skills", "skills"),
+            (
+                "codearts-agent",
+                "CodeArts Agent",
+                ".codeartsdoer/skills",
+                ".codeartsdoer/skills",
+            ),
+            (
+                "codebuddy",
+                "CodeBuddy",
+                ".codebuddy/skills",
+                ".codebuddy/skills",
+            ),
+            (
+                "codemaker",
+                "Codemaker",
+                ".codemaker/skills",
+                ".codemaker/skills",
+            ),
+            (
+                "codestudio",
+                "Code Studio",
+                ".codestudio/skills",
+                ".codestudio/skills",
+            ),
+            (
+                "command-code",
+                "Command Code",
+                ".commandcode/skills",
+                ".commandcode/skills",
+            ),
+            (
+                "continue",
+                "Continue",
+                ".continue/skills",
+                ".continue/skills",
+            ),
+            (
+                "cortex",
+                "Cortex Code",
+                ".snowflake/cortex/skills",
+                ".cortex/skills",
+            ),
+            ("crush", "Crush", ".config/crush/skills", ".crush/skills"),
+            (
+                "devin",
+                "Devin for Terminal",
+                ".config/devin/skills",
+                ".devin/skills",
+            ),
+            (
+                "factory-droid",
+                "Factory Droid",
+                ".factory/skills",
+                ".factory/skills",
+            ),
+            ("forgecode", "ForgeCode", ".forge/skills", ".forge/skills"),
+            ("goose", "Goose", ".config/goose/skills", ".goose/skills"),
+            ("junie", "Junie", ".junie/skills", ".junie/skills"),
+            ("iflow-cli", "iFlow CLI", ".iflow/skills", ".iflow/skills"),
+            (
+                "kilocode",
+                "Kilo Code",
+                ".kilocode/skills",
+                ".kilocode/skills",
+            ),
+            ("kiro", "Kiro CLI", ".kiro/skills", ".kiro/skills"),
+            ("kode", "Kode", ".kode/skills", ".kode/skills"),
+            ("mcpjam", "MCPJam", ".mcpjam/skills", ".mcpjam/skills"),
+            (
+                "mistral-vibe",
+                "Mistral Vibe",
+                ".vibe/skills",
+                ".vibe/skills",
+            ),
+            ("mux", "Mux", ".mux/skills", ".mux/skills"),
+            (
+                "openhands",
+                "OpenHands",
+                ".openhands/skills",
+                ".openhands/skills",
+            ),
+            ("pi", "Pi", ".pi/agent/skills", ".pi/skills"),
+            ("qoder", "Qoder", ".qoder/skills", ".qoder/skills"),
+            ("qwen", "Qwen Code", ".qwen/skills", ".qwen/skills"),
+            ("rovodev", "Rovo Dev", ".rovodev/skills", ".rovodev/skills"),
+            ("roo", "Roo Code", ".roo/skills", ".roo/skills"),
+            (
+                "tabnine-cli",
+                "Tabnine CLI",
+                ".tabnine/agent/skills",
+                ".tabnine/agent/skills",
+            ),
+            ("trae", "Trae", ".trae/skills", ".trae/skills"),
+            ("trae-cn", "Trae CN", ".trae-cn/skills", ".trae/skills"),
+            (
+                "windsurf",
+                "Windsurf",
+                ".codeium/windsurf/skills",
+                ".windsurf/skills",
+            ),
+            (
+                "zencoder",
+                "Zencoder",
+                ".zencoder/skills",
+                ".zencoder/skills",
+            ),
+            ("neovate", "Neovate", ".neovate/skills", ".neovate/skills"),
+            ("pochi", "Pochi", ".pochi/skills", ".pochi/skills"),
+            ("adal", "AdaL", ".adal/skills", ".adal/skills"),
+        ];
+
+        for (id, display_name, global_rel, project_rel) in expected {
+            let agent = agents_by_id
+                .get(id)
+                .unwrap_or_else(|| panic!("missing built-in agent {id}"));
+            assert_eq!(agent.display_name, display_name, "display_name for {id}");
+            assert_eq!(
+                agent.global_skills_dir,
+                path_to_string(&home.join(global_rel)),
+                "global_skills_dir for {id}"
+            );
+            assert_eq!(
+                agent.project_skills_dir.as_deref(),
+                Some(project_rel),
+                "project_skills_dir for {id}"
+            );
+        }
+
+        assert!(!agents_by_id.contains_key("droid"));
+        assert!(!agents_by_id.contains_key("qwen-code"));
+        assert!(!agents_by_id.contains_key("kilo"));
+        assert!(!agents_by_id.contains_key("kiro-cli"));
     }
 
     #[tokio::test]
@@ -1911,7 +2380,11 @@ mod tests {
         let pool = setup_test_db().await;
         init_database(&pool).await.unwrap(); // Call a second time
         let agents = get_all_agents(&pool).await.unwrap();
-        assert_eq!(agents.len(), 27, "Reinit must not duplicate agents");
+        assert_eq!(
+            agents.len(),
+            builtin_agents().len(),
+            "Reinit must not duplicate agents"
+        );
     }
 
     // ── Skills ────────────────────────────────────────────────────────────────
@@ -1958,6 +2431,31 @@ mod tests {
 
         let retrieved = get_skill_by_id(&pool, "skill-1").await.unwrap().unwrap();
         assert_eq!(retrieved.name, "Updated Name");
+    }
+
+    #[tokio::test]
+    async fn test_upsert_skill_noncentral_scan_does_not_overwrite_central_metadata() {
+        let pool = setup_test_db().await;
+        let central = make_skill("shared-skill", "Central Name", true);
+        upsert_skill(&pool, &central).await.unwrap();
+
+        let mut platform = make_skill("shared-skill", "Platform Name", false);
+        platform.description = Some("Platform description".to_string());
+        platform.file_path = "/tmp/.hermes/skills/category/shared-skill/SKILL.md".to_string();
+        platform.source = Some("copy".to_string());
+        platform.scanned_at = "2026-04-28T00:00:00Z".to_string();
+        upsert_skill(&pool, &platform).await.unwrap();
+
+        let retrieved = get_skill_by_id(&pool, "shared-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved.name, "Central Name");
+        assert_eq!(retrieved.description, central.description);
+        assert_eq!(retrieved.file_path, central.file_path);
+        assert_eq!(retrieved.canonical_path, central.canonical_path);
+        assert!(retrieved.is_central);
+        assert_eq!(retrieved.scanned_at, "2026-04-28T00:00:00Z");
     }
 
     #[tokio::test]
@@ -2121,7 +2619,11 @@ mod tests {
         insert_custom_agent(&pool, &custom).await.unwrap();
 
         let all = get_all_agents(&pool).await.unwrap();
-        assert_eq!(all.len(), 28, "Should have 27 builtins + 1 custom");
+        assert_eq!(
+            all.len(),
+            builtin_agents().len() + 1,
+            "Should have builtins + 1 custom"
+        );
 
         let retrieved = get_agent_by_id(&pool, "my-custom-agent")
             .await
@@ -2320,7 +2822,7 @@ mod tests {
 
     /// Returns the number of *unique* global_skills_dir paths across all
     /// built-in agents.  This is the number of rows that seed_builtin_scan_directories
-    /// inserts (codex and central share ~/.agents/skills, so the count is 10).
+    /// inserts.
     fn expected_builtin_scan_dir_count() -> usize {
         let mut paths = std::collections::HashSet::new();
         for agent in builtin_agents() {

@@ -194,6 +194,51 @@ async fn ensure_centralized(
     Ok(())
 }
 
+async fn canonical_dir_for_skill(
+    pool: &DbPool,
+    skill_id: &str,
+    central_root: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(skill) = db::get_skill_by_id(pool, skill_id).await? {
+        if let Some(canonical_path) = skill.canonical_path {
+            let canonical_dir = PathBuf::from(canonical_path);
+            if canonical_dir.join("SKILL.md").exists() {
+                return Ok(canonical_dir);
+            }
+        }
+    }
+
+    Ok(central_root.join(skill_id))
+}
+
+async fn existing_install_path_for_agent(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    Ok(db::get_skill_installations(pool, skill_id)
+        .await?
+        .into_iter()
+        .find(|installation| installation.agent_id == agent_id)
+        .map(|installation| installation.installed_path))
+}
+
+async fn universal_available_install_result(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+    canonical_dir: &Path,
+) -> Result<Option<InstallResult>, String> {
+    if !db::agent_supports_universal_agents_skills(agent_id) {
+        return Ok(None);
+    }
+
+    let symlink_path = existing_install_path_for_agent(pool, skill_id, agent_id)
+        .await?
+        .unwrap_or_else(|| canonical_dir.to_string_lossy().into_owned());
+    Ok(Some(InstallResult { symlink_path }))
+}
+
 // ─── Core Logic ───────────────────────────────────────────────────────────────
 
 /// Core install logic, separated from the Tauri layer for testability.
@@ -226,10 +271,17 @@ pub async fn install_skill_to_agent_impl(
         .await?
         .ok_or_else(|| "Central agent not found in database".to_string())?;
 
-    let canonical_dir = PathBuf::from(&central.global_skills_dir).join(skill_id);
+    let central_root = PathBuf::from(&central.global_skills_dir);
+    let canonical_dir = canonical_dir_for_skill(pool, skill_id, &central_root).await?;
 
     // 3. Ensure the skill exists in central (auto-centralize if needed).
     ensure_centralized(pool, skill_id, &canonical_dir).await?;
+
+    if let Some(result) =
+        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
+    {
+        return Ok(result);
+    }
 
     // 4. Compute symlink location.
     let agent_dir = PathBuf::from(&agent.global_skills_dir);
@@ -332,10 +384,17 @@ pub async fn install_skill_to_agent_copy_impl(
         .await?
         .ok_or_else(|| "Central agent not found in database".to_string())?;
 
-    let canonical_dir = PathBuf::from(&central.global_skills_dir).join(skill_id);
+    let central_root = PathBuf::from(&central.global_skills_dir);
+    let canonical_dir = canonical_dir_for_skill(pool, skill_id, &central_root).await?;
 
     // 3. Ensure the skill exists in central (auto-centralize if needed).
     ensure_centralized(pool, skill_id, &canonical_dir).await?;
+
+    if let Some(result) =
+        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
+    {
+        return Ok(result);
+    }
 
     // 4. Compute target location.
     let agent_dir = PathBuf::from(&agent.global_skills_dir);
@@ -404,15 +463,18 @@ pub async fn uninstall_skill_from_agent_impl(
         .await?
         .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
 
-    // 2. Compute the expected install location.
-    let install_path = PathBuf::from(&agent.global_skills_dir).join(skill_id);
-
-    // 3. Look up the installation record to determine how it was installed.
+    // 2. Look up the installation record to determine where and how it was installed.
     let installations = db::get_skill_installations(pool, skill_id).await?;
     let record = installations.iter().find(|r| r.agent_id == agent_id);
+    if record.is_none() && db::agent_supports_universal_agents_skills(agent_id) {
+        return Ok(());
+    }
+    let install_path = record
+        .map(|r| PathBuf::from(&r.installed_path))
+        .unwrap_or_else(|| PathBuf::from(&agent.global_skills_dir).join(skill_id));
     let link_type = record.map(|r| r.link_type.as_str()).unwrap_or("symlink");
 
-    // 4. Inspect the entry at that path and remove it appropriately.
+    // 3. Inspect the entry at that path and remove it appropriately.
     match std::fs::symlink_metadata(&install_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             // Always safe to remove symlinks.
@@ -442,7 +504,7 @@ pub async fn uninstall_skill_from_agent_impl(
         }
     }
 
-    // 5. Remove the installation record from the database.
+    // 4. Remove the installation record from the database.
     db::delete_skill_installation(pool, skill_id, agent_id).await?;
 
     Ok(())
@@ -607,6 +669,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_install_to_universal_agent_returns_central_availability_without_link() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join(".agents/skills");
+        let cursor_dir = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
+            .bind(cursor_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        create_central_skill(&central_dir, "universal-skill");
+
+        let result = install_skill_to_agent_impl(&pool, "universal-skill", "cursor")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.symlink_path,
+            central_dir
+                .join("universal-skill")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert!(
+            !cursor_dir.join("universal-skill").exists(),
+            "universal agents must not receive redundant links for central skills"
+        );
+        assert!(
+            db::get_skill_installations(&pool, "universal-skill")
+                .await
+                .unwrap()
+                .into_iter()
+                .all(|installation| installation.agent_id != "cursor"),
+            "universal availability must not create removable installation rows"
+        );
+    }
+
+    #[tokio::test]
     async fn test_install_symlink_is_relative() {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
@@ -688,6 +790,60 @@ mod tests {
         assert_eq!(installations.len(), 1);
         assert_eq!(installations[0].agent_id, "claude-code");
         assert_eq!(installations[0].link_type, "symlink");
+    }
+
+    #[tokio::test]
+    async fn test_install_uses_nested_canonical_path_from_db() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        let nested_skill_dir = central_dir.join("superpowers").join("using-superpowers");
+        fs::create_dir_all(&nested_skill_dir).unwrap();
+        fs::write(
+            nested_skill_dir.join("SKILL.md"),
+            "---\nname: using-superpowers\ndescription: Nested central\n---\n",
+        )
+        .unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        db::upsert_skill(
+            &pool,
+            &db::Skill {
+                id: "using-superpowers".to_string(),
+                name: "using-superpowers".to_string(),
+                description: Some("Nested central".to_string()),
+                file_path: nested_skill_dir
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .into_owned(),
+                canonical_path: Some(nested_skill_dir.to_string_lossy().into_owned()),
+                is_central: true,
+                source: Some("native".to_string()),
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        install_skill_to_agent_impl(&pool, "using-superpowers", "claude-code")
+            .await
+            .unwrap();
+
+        let symlink_path = agent_dir.join("using-superpowers");
+        assert!(symlink_path.join("SKILL.md").exists());
+        assert!(
+            !central_dir.join("using-superpowers").exists(),
+            "nested canonical skill must not be copied to the central root"
+        );
+        let link_target = fs::read_link(&symlink_path).unwrap();
+        assert!(
+            link_target
+                .to_string_lossy()
+                .contains("superpowers/using-superpowers"),
+            "symlink should point at nested canonical path, got {:?}",
+            link_target
+        );
     }
 
     #[tokio::test]
@@ -890,6 +1046,61 @@ mod tests {
         assert!(installations.is_empty(), "DB record should be cleaned up");
     }
 
+    #[tokio::test]
+    async fn test_uninstall_universal_availability_without_record_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        create_central_skill(&central_dir, "universal-skill");
+
+        uninstall_skill_from_agent_impl(&pool, "universal-skill", "cursor")
+            .await
+            .unwrap();
+
+        assert!(
+            central_dir.join("universal-skill/SKILL.md").exists(),
+            "uninstalling read-only universal availability must not delete the central skill"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_uninstall_uses_recorded_installed_path_for_nested_skill() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("hermes");
+        let nested_installed = agent_dir.join("apple").join("apple-reminders");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&nested_installed).unwrap();
+        fs::write(
+            nested_installed.join("SKILL.md"),
+            "---\nname: apple-reminders\ndescription: Nested platform\n---\n",
+        )
+        .unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let installation = SkillInstallation {
+            skill_id: "apple-reminders".to_string(),
+            agent_id: "claude-code".to_string(),
+            installed_path: nested_installed.to_string_lossy().into_owned(),
+            link_type: "copy".to_string(),
+            symlink_target: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill_installation(&pool, &installation)
+            .await
+            .unwrap();
+
+        uninstall_skill_from_agent_impl(&pool, "apple-reminders", "claude-code")
+            .await
+            .unwrap();
+
+        assert!(
+            !nested_installed.exists(),
+            "uninstall should remove the actual nested installed path"
+        );
+    }
+
     // ── batch install ─────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -897,14 +1108,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
         let claude_dir = tmp.path().join("claude");
-        let cursor_dir = tmp.path().join("cursor");
+        let aider_dir = tmp.path().join("aider");
         fs::create_dir_all(&central_dir).unwrap();
 
         let pool = setup_db(&central_dir, &claude_dir).await;
 
-        // Override cursor's dir too.
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
-            .bind(cursor_dir.to_str().unwrap())
+        // Override a second non-universal agent's dir too.
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'aider'")
+            .bind(aider_dir.to_str().unwrap())
             .execute(&pool)
             .await
             .unwrap();
@@ -914,7 +1125,7 @@ mod tests {
         let result = batch_install_impl(
             &pool,
             "batch-skill",
-            &["claude-code".to_string(), "cursor".to_string()],
+            &["claude-code".to_string(), "aider".to_string()],
         )
         .await;
 
@@ -922,7 +1133,7 @@ mod tests {
         assert!(result.failed.is_empty());
 
         assert!(fs::symlink_metadata(claude_dir.join("batch-skill")).is_ok());
-        assert!(fs::symlink_metadata(cursor_dir.join("batch-skill")).is_ok());
+        assert!(fs::symlink_metadata(aider_dir.join("batch-skill")).is_ok());
     }
 
     #[tokio::test]

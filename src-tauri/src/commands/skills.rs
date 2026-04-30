@@ -1,12 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tauri::State;
 
 use crate::db::{self, Collection, DbPool, SkillForAgent};
 use crate::AppState;
+
+use super::linker::uninstall_skill_from_agent_impl;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +28,8 @@ pub struct SkillWithLinks {
     pub updated_at: String,
     /// Agent IDs that have an installation record for this skill.
     pub linked_agents: Vec<String>,
+    /// Agent IDs that observe this skill from a shared/read-only compatibility root.
+    pub read_only_agents: Vec<String>,
 }
 
 /// An installation record enriched with the `installed_at` timestamp for
@@ -61,6 +65,8 @@ pub struct SkillDetail {
     pub is_read_only: bool,
     pub conflict_group: Option<String>,
     pub conflict_count: i64,
+    /// Agent IDs that can see this central skill through a read-only compatibility root.
+    pub read_only_agents: Vec<String>,
     /// All installation records for this skill across agents.
     pub installations: Vec<SkillInstallationDetail>,
     /// Collections this skill currently belongs to.
@@ -74,6 +80,21 @@ pub struct SkillDirectoryNode {
     pub relative_path: String,
     pub is_dir: bool,
     pub children: Vec<SkillDirectoryNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCentralSkillOptions {
+    pub cascade_uninstall: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCentralSkillResult {
+    pub skill_id: String,
+    pub removed_canonical_path: String,
+    pub uninstalled_agents: Vec<String>,
+    pub skipped_read_only_agents: Vec<String>,
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
@@ -117,6 +138,137 @@ fn skill_dir_path(skill: &db::Skill) -> String {
                 .map(|path| path.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| skill.file_path.clone())
+}
+
+fn canonical_delete_dir(skill: &db::Skill, central_root: &Path) -> PathBuf {
+    skill
+        .canonical_path
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| Path::new(&skill.file_path).parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| central_root.join(&skill.id))
+}
+
+fn ensure_under_central_root(path: &Path, central_root: &Path) -> Result<(), String> {
+    if path.starts_with(central_root) && path != central_root {
+        Ok(())
+    } else {
+        Err("Canonical path is outside Central Skills root".to_string())
+    }
+}
+
+fn validate_central_delete_target(
+    canonical_dir: &Path,
+    central_root: &Path,
+) -> Result<PathBuf, String> {
+    let metadata = std::fs::symlink_metadata(canonical_dir).map_err(|e| {
+        format!(
+            "Failed to read canonical path '{}': {}",
+            canonical_dir.display(),
+            e
+        )
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        let parent = canonical_dir
+            .parent()
+            .ok_or_else(|| "Canonical path has no parent directory".to_string())?
+            .canonicalize()
+            .map_err(|e| {
+                format!(
+                    "Failed to resolve canonical path parent '{}': {}",
+                    canonical_dir.display(),
+                    e
+                )
+            })?;
+        let file_name = canonical_dir
+            .file_name()
+            .ok_or_else(|| "Canonical path has no directory name".to_string())?;
+        ensure_under_central_root(&parent.join(file_name), central_root)?;
+        return Ok(canonical_dir.to_path_buf());
+    }
+
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Canonical path '{}' is not a skill directory",
+            canonical_dir.display()
+        ));
+    }
+
+    let resolved = canonical_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve canonical path '{}': {}",
+            canonical_dir.display(),
+            e
+        )
+    })?;
+    ensure_under_central_root(&resolved, central_root)?;
+
+    if !resolved.join("SKILL.md").exists() {
+        return Err(format!(
+            "Canonical skill directory '{}' does not contain SKILL.md",
+            resolved.display()
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn remove_central_skill_dir(target: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(target).map_err(|e| {
+        format!(
+            "Failed to read canonical path '{}': {}",
+            target.display(),
+            e
+        )
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        std::fs::remove_file(target)
+            .map_err(|e| format!("Failed to remove central skill symlink: {}", e))
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(target)
+            .map_err(|e| format!("Failed to remove central skill directory: {}", e))
+    } else {
+        Err(format!(
+            "Canonical path '{}' is not a removable skill directory",
+            target.display()
+        ))
+    }
+}
+
+fn path_resolves_to(path: &Path, target: &Path) -> bool {
+    path.canonicalize()
+        .ok()
+        .zip(target.canonicalize().ok())
+        .is_some_and(|(left, right)| left == right)
+}
+
+async fn is_shared_central_installation(
+    pool: &DbPool,
+    installation: &db::SkillInstallation,
+    central_root: &Path,
+    central_skill_dir: &Path,
+) -> Result<bool, String> {
+    if installation.agent_id == "central" {
+        return Ok(true);
+    }
+
+    let agent = match db::get_agent_by_id(pool, &installation.agent_id).await? {
+        Some(agent) => agent,
+        None => return Ok(false),
+    };
+    let agent_dir = PathBuf::from(agent.global_skills_dir);
+    if agent_dir
+        .canonicalize()
+        .ok()
+        .is_some_and(|resolved| resolved == central_root)
+    {
+        return Ok(true);
+    }
+
+    Ok(installation.link_type == "copy"
+        && path_resolves_to(Path::new(&installation.installed_path), central_skill_dir))
 }
 
 fn build_skill_directory_nodes(
@@ -198,11 +350,11 @@ fn build_skill_directory_nodes(
     Ok(nodes)
 }
 
-fn claude_conflict_group(agent_id: &str, skill_id: &str) -> String {
+fn observation_conflict_group(agent_id: &str, skill_id: &str) -> String {
     format!("{agent_id}::{skill_id}")
 }
 
-fn claude_conflict_counts(observations: &[db::AgentSkillObservation]) -> HashMap<String, i64> {
+fn observation_conflict_counts(observations: &[db::AgentSkillObservation]) -> HashMap<String, i64> {
     let mut counts = HashMap::new();
     for observation in observations {
         *counts.entry(observation.skill_id.clone()).or_insert(0) += 1;
@@ -210,14 +362,14 @@ fn claude_conflict_counts(observations: &[db::AgentSkillObservation]) -> HashMap
     counts
 }
 
-fn claude_conflict_metadata(
+fn observation_conflict_metadata(
     agent_id: &str,
     skill_id: &str,
     counts: &HashMap<String, i64>,
 ) -> (Option<String>, i64) {
     let count = counts.get(skill_id).copied().unwrap_or(0);
     if count > 1 {
-        (Some(claude_conflict_group(agent_id, skill_id)), count)
+        (Some(observation_conflict_group(agent_id, skill_id)), count)
     } else {
         (None, 0)
     }
@@ -237,22 +389,44 @@ fn installation_details(installations: Vec<db::SkillInstallation>) -> Vec<SkillI
         .collect()
 }
 
-async fn get_claude_observation_detail(
+async fn read_only_agent_ids_for_skill(
+    pool: &DbPool,
+    skill_id: &str,
+    is_central: bool,
+) -> Result<Vec<String>, String> {
+    let mut agent_ids: BTreeSet<String> =
+        db::get_read_only_observed_agent_ids_for_skill(pool, skill_id)
+            .await?
+            .into_iter()
+            .collect();
+
+    if is_central {
+        for agent in db::get_all_agents(pool).await? {
+            if agent.is_enabled && db::agent_supports_universal_agents_skills(&agent.id) {
+                agent_ids.insert(agent.id);
+            }
+        }
+    }
+
+    for installation in db::get_skill_installations(pool, skill_id).await? {
+        agent_ids.remove(&installation.agent_id);
+    }
+
+    Ok(agent_ids.into_iter().collect())
+}
+
+async fn get_observation_detail(
     pool: &DbPool,
     skill_id: &str,
     agent_id: &str,
     row_id: Option<&str>,
 ) -> Result<Option<SkillDetail>, String> {
-    if agent_id != "claude-code" {
-        return Ok(None);
-    }
-
     let observations = db::get_agent_skill_observations(pool, agent_id).await?;
     if observations.is_empty() {
         return Ok(None);
     }
 
-    let conflict_counts = claude_conflict_counts(&observations);
+    let conflict_counts = observation_conflict_counts(&observations);
     let matches: Vec<db::AgentSkillObservation> = observations
         .into_iter()
         .filter(|observation| observation.skill_id == skill_id)
@@ -266,11 +440,16 @@ async fn get_claude_observation_detail(
         Some(row_id) => matches
             .into_iter()
             .find(|observation| observation.row_id == row_id)
-            .ok_or_else(|| format!("Claude row '{}' not found for skill '{}'", row_id, skill_id))?,
+            .ok_or_else(|| {
+                format!(
+                    "Observation row '{}' not found for skill '{}'",
+                    row_id, skill_id
+                )
+            })?,
         None if matches.len() == 1 => matches.into_iter().next().expect("single match"),
         None => {
             return Err(format!(
-                "Multiple Claude rows found for skill '{}'; row_id is required",
+                "Multiple observed rows found for skill '{}'; row_id is required",
                 skill_id
             ))
         }
@@ -288,7 +467,7 @@ async fn get_claude_observation_detail(
         db::get_skill_collections(pool, &observation.skill_id).await?
     };
     let (conflict_group, conflict_count) =
-        claude_conflict_metadata(agent_id, &observation.skill_id, &conflict_counts);
+        observation_conflict_metadata(agent_id, &observation.skill_id, &conflict_counts);
 
     Ok(Some(SkillDetail {
         row_id: observation.row_id,
@@ -322,6 +501,7 @@ async fn get_claude_observation_detail(
         is_read_only: observation.is_read_only,
         conflict_group,
         conflict_count,
+        read_only_agents: Vec::new(),
         installations,
         collections,
     }))
@@ -334,9 +514,7 @@ async fn get_skill_detail_with_row_impl(
     row_id: Option<&str>,
 ) -> Result<SkillDetail, String> {
     if let Some(agent_id) = agent_id {
-        if let Some(detail) =
-            get_claude_observation_detail(pool, skill_id, agent_id, row_id).await?
-        {
+        if let Some(detail) = get_observation_detail(pool, skill_id, agent_id, row_id).await? {
             return Ok(detail);
         }
     }
@@ -349,6 +527,7 @@ async fn get_skill_detail_with_row_impl(
     let dir_path = skill_dir_path(&skill);
     let installations = installation_details(db::get_skill_installations(pool, skill_id).await?);
     let collections = db::get_skill_collections(pool, skill_id).await?;
+    let read_only_agents = read_only_agent_ids_for_skill(pool, skill_id, skill.is_central).await?;
 
     Ok(SkillDetail {
         row_id,
@@ -366,6 +545,7 @@ async fn get_skill_detail_with_row_impl(
         is_read_only: false,
         conflict_group: None,
         conflict_count: 0,
+        read_only_agents,
         installations,
         collections,
     })
@@ -406,6 +586,8 @@ pub async fn get_central_skills(state: State<'_, AppState>) -> Result<Vec<SkillW
     for skill in skills {
         let installations = db::get_skill_installations(&state.db, &skill.id).await?;
         let linked_agents: Vec<String> = installations.into_iter().map(|i| i.agent_id).collect();
+        let read_only_agents =
+            read_only_agent_ids_for_skill(&state.db, &skill.id, skill.is_central).await?;
         let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
 
         result.push(SkillWithLinks {
@@ -420,10 +602,86 @@ pub async fn get_central_skills(state: State<'_, AppState>) -> Result<Vec<SkillW
             created_at,
             updated_at,
             linked_agents,
+            read_only_agents,
         });
     }
 
     Ok(result)
+}
+
+pub async fn delete_central_skill_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    options: DeleteCentralSkillOptions,
+) -> Result<DeleteCentralSkillResult, String> {
+    let skill = db::get_skill_by_id(pool, skill_id)
+        .await?
+        .ok_or_else(|| format!("Skill '{}' not found", skill_id))?;
+
+    if !skill.is_central {
+        return Err(format!("Skill '{}' is not central", skill_id));
+    }
+
+    let central = db::get_agent_by_id(pool, "central")
+        .await?
+        .ok_or_else(|| "Central agent not found in database".to_string())?;
+    let central_root = PathBuf::from(&central.global_skills_dir)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve Central Skills root: {}", e))?;
+    let canonical_dir = canonical_delete_dir(&skill, &central_root);
+    let delete_target = validate_central_delete_target(&canonical_dir, &central_root)?;
+
+    let installations = db::get_skill_installations(pool, skill_id).await?;
+    if !options.cascade_uninstall && !installations.is_empty() {
+        let agents = installations
+            .iter()
+            .map(|installation| installation.agent_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("Skill is installed on agents: {}", agents));
+    }
+
+    let skipped_read_only_agents = read_only_agent_ids_for_skill(pool, skill_id, true).await?;
+    let mut uninstalled_agents = Vec::new();
+
+    if options.cascade_uninstall {
+        for installation in &installations {
+            if is_shared_central_installation(pool, installation, &central_root, &delete_target)
+                .await?
+            {
+                continue;
+            }
+
+            uninstall_skill_from_agent_impl(pool, skill_id, &installation.agent_id).await?;
+            uninstalled_agents.push(installation.agent_id.clone());
+        }
+    }
+
+    remove_central_skill_dir(&delete_target)?;
+    db::delete_central_skill_records(pool, skill_id, &skill.name).await?;
+
+    Ok(DeleteCentralSkillResult {
+        skill_id: skill_id.to_string(),
+        removed_canonical_path: delete_target.to_string_lossy().into_owned(),
+        uninstalled_agents,
+        skipped_read_only_agents,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_central_skill(
+    state: State<'_, AppState>,
+    skill_id: String,
+    options: Option<DeleteCentralSkillOptions>,
+) -> Result<DeleteCentralSkillResult, String> {
+    delete_central_skill_impl(
+        &state.db,
+        &skill_id,
+        options.unwrap_or(DeleteCentralSkillOptions {
+            cascade_uninstall: false,
+        }),
+    )
+    .await
 }
 
 /// Tauri command: return detailed information about a skill, including all
@@ -518,16 +776,26 @@ fn open_in_file_manager_impl(path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::linker::create_symlink;
     use crate::db::{self, AgentSkillObservation, Skill, SkillInstallation};
     use chrono::Utc;
     use sqlx::SqlitePool;
-    use std::fs;
+    use std::{fs, path::Path};
     use tempfile::TempDir;
 
     async fn setup_test_db() -> SqlitePool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         db::init_database(&pool).await.unwrap();
         pool
+    }
+
+    fn expected_universal_read_only_agents(extra: &[&str]) -> Vec<String> {
+        let agent_ids = db::UNIVERSAL_AGENTS_SKILLS_AGENT_IDS
+            .iter()
+            .chain(extra.iter())
+            .map(|agent_id| (*agent_id).to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        agent_ids.into_iter().collect()
     }
 
     fn make_skill(id: &str, name: &str, is_central: bool) -> Skill {
@@ -579,6 +847,67 @@ mod tests {
             is_read_only: read_only,
             scanned_at: Utc::now().to_rfc3339(),
         }
+    }
+
+    fn make_observation_for_agent(
+        agent_id: &str,
+        row_id: &str,
+        skill_id: &str,
+        name: &str,
+        dir_path: &str,
+        source_kind: &str,
+        source_root: &str,
+        read_only: bool,
+    ) -> AgentSkillObservation {
+        AgentSkillObservation {
+            row_id: row_id.to_string(),
+            agent_id: agent_id.to_string(),
+            skill_id: skill_id.to_string(),
+            name: name.to_string(),
+            description: Some(format!("{source_kind} copy")),
+            file_path: format!("{dir_path}/SKILL.md"),
+            dir_path: dir_path.to_string(),
+            source_kind: source_kind.to_string(),
+            source_root: source_root.to_string(),
+            link_type: "copy".to_string(),
+            symlink_target: None,
+            is_read_only: read_only,
+            scanned_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    async fn set_agent_dir(pool: &SqlitePool, agent_id: &str, dir: &Path) {
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+            .bind(dir.to_string_lossy().into_owned())
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn create_central_skill(pool: &SqlitePool, central_dir: &Path, skill_id: &str) -> Skill {
+        let skill_dir = central_dir.join(skill_id);
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md_path = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_md_path,
+            format!("---\nname: {skill_id}\ndescription: Test skill\n---\n\n# {skill_id}\n"),
+        )
+        .unwrap();
+
+        let skill = Skill {
+            id: skill_id.to_string(),
+            name: skill_id.to_string(),
+            description: Some("Test skill".to_string()),
+            file_path: skill_md_path.to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(pool, &skill).await.unwrap();
+        skill
     }
 
     // ── get_skills_by_agent ───────────────────────────────────────────────────
@@ -698,6 +1027,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_central_skills_reports_factory_compatibility_as_read_only_agent() {
+        let pool = setup_test_db().await;
+
+        let central_skill = make_skill("shared-skill", "Shared Skill", true);
+        db::upsert_skill(&pool, &central_skill).await.unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "factory-droid",
+                "factory-droid::/tmp/.agents/skills/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.agents/skills/shared-skill",
+                "compatibility",
+                "/tmp/.agents/skills",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let skills_with_links = get_central_skills_impl(&pool).await.unwrap();
+        assert_eq!(skills_with_links.len(), 1);
+        assert!(
+            skills_with_links[0].linked_agents.is_empty(),
+            "read-only compatibility observations are not removable installation links"
+        );
+        assert_eq!(
+            skills_with_links[0].read_only_agents,
+            expected_universal_read_only_agents(&["factory-droid"])
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_central_skills_excludes_non_central() {
         let pool = setup_test_db().await;
 
@@ -713,6 +1076,268 @@ mod tests {
             "only central skills should be returned"
         );
         assert_eq!(skills_with_links[0].id, "c-skill");
+    }
+
+    // ── delete_central_skill ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_delete_central_skill_removes_files_and_related_rows() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        create_central_skill(&pool, &central_dir, "delete-me").await;
+
+        let collection = db::create_collection(&pool, "Cleanup", None).await.unwrap();
+        db::add_skill_to_collection(&pool, &collection.id, "delete-me")
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO skill_explanations (skill_id, explanation, lang, model, created_at, updated_at)
+             VALUES ('delete-me', 'cached', 'en', 'test-model', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO skill_registries
+             (id, name, source_type, url, is_builtin, is_enabled, last_sync_status, created_at)
+             VALUES ('test-registry', 'Test Registry', 'github', 'https://example.com/repo', 0, 1, 'success', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO marketplace_skills
+             (id, registry_id, name, description, download_url, is_installed, synced_at)
+             VALUES ('test-registry::delete-me', 'test-registry', 'delete-me', NULL, 'https://example.com/SKILL.md', 1, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(
+            &pool,
+            "delete-me",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.skill_id, "delete-me");
+        assert!(!central_dir.join("delete-me").exists());
+        assert!(db::get_skill_by_id(&pool, "delete-me")
+            .await
+            .unwrap()
+            .is_none());
+
+        let collection_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM collection_skills WHERE skill_id = 'delete-me'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let explanation_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM skill_explanations WHERE skill_id = 'delete-me'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let is_installed: i64 = sqlx::query_scalar(
+            "SELECT is_installed FROM marketplace_skills WHERE id = 'test-registry::delete-me'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(collection_count, 0);
+        assert_eq!(explanation_count, 0);
+        assert_eq!(is_installed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_refuses_linked_skill_without_cascade() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        create_central_skill(&pool, &central_dir, "linked-skill").await;
+
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "linked-skill".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: tmp
+                    .path()
+                    .join("claude")
+                    .join("linked-skill")
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(
+                    central_dir
+                        .join("linked-skill")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = delete_central_skill_impl(
+            &pool,
+            "linked-skill",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: false,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("installed on agents"));
+        assert!(central_dir.join("linked-skill").exists());
+        assert!(db::get_skill_by_id(&pool, "linked-skill")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_cascades_platform_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&claude_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        set_agent_dir(&pool, "claude-code", &claude_dir).await;
+        create_central_skill(&pool, &central_dir, "cascade-me").await;
+
+        let install_path = claude_dir.join("cascade-me");
+        create_symlink(&central_dir.join("cascade-me"), &install_path).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "cascade-me".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: install_path.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(
+                    central_dir
+                        .join("cascade-me")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(
+            &pool,
+            "cascade-me",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.uninstalled_agents, vec!["claude-code".to_string()]);
+        assert!(!install_path.exists());
+        assert!(!central_dir.join("cascade-me").exists());
+        assert!(db::get_skill_installations(&pool, "cascade-me")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_refuses_canonical_path_outside_central_root() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let outside_dir = tmp.path().join("outside").join("escape-skill");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("SKILL.md"), "---\nname: escape\n---\n").unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+
+        let mut skill = make_skill("escape-skill", "escape-skill", true);
+        skill.file_path = outside_dir.join("SKILL.md").to_string_lossy().into_owned();
+        skill.canonical_path = Some(outside_dir.to_string_lossy().into_owned());
+        db::upsert_skill(&pool, &skill).await.unwrap();
+
+        let err = delete_central_skill_impl(
+            &pool,
+            "escape-skill",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: true,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("outside Central Skills root"));
+        assert!(outside_dir.exists());
+        assert!(db::get_skill_by_id(&pool, "escape-skill")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_does_not_uninstall_shared_codex_root_as_copy() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        set_agent_dir(&pool, "codex", &central_dir).await;
+        create_central_skill(&pool, &central_dir, "shared-root").await;
+
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "shared-root".to_string(),
+                agent_id: "codex".to_string(),
+                installed_path: central_dir
+                    .join("shared-root")
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(
+            &pool,
+            "shared-root",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.uninstalled_agents.is_empty());
+        assert!(!central_dir.join("shared-root").exists());
+        assert!(db::get_skill_installations(&pool, "shared-root")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     // ── get_skill_detail ──────────────────────────────────────────────────────
@@ -847,6 +1472,8 @@ mod tests {
             let installations = db::get_skill_installations(pool, &skill.id).await?;
             let linked_agents: Vec<String> =
                 installations.into_iter().map(|i| i.agent_id).collect();
+            let read_only_agents =
+                read_only_agent_ids_for_skill(pool, &skill.id, skill.is_central).await?;
             let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
             result.push(SkillWithLinks {
                 id: skill.id,
@@ -860,6 +1487,7 @@ mod tests {
                 created_at,
                 updated_at,
                 linked_agents,
+                read_only_agents,
             });
         }
         Ok(result)
@@ -1055,6 +1683,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_skills_by_agent_impl_includes_generic_read_only_observations() {
+        let pool = setup_test_db().await;
+
+        let skill = make_skill("shared-skill", "Shared Skill", true);
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "factory-droid",
+                "factory-droid::/tmp/.agents/skills/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.agents/skills/shared-skill",
+                "compatibility",
+                "/tmp/.agents/skills",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let skills = get_skills_by_agent_impl(&pool, "factory-droid")
+            .await
+            .unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "shared-skill");
+        assert_eq!(skills[0].source_kind.as_deref(), Some("compatibility"));
+        assert!(skills[0].is_read_only);
+        assert_eq!(
+            skills[0].source_root.as_deref(),
+            Some("/tmp/.agents/skills")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_skills_by_agent_impl_prefers_manageable_install_over_read_only_observation() {
+        let pool = setup_test_db().await;
+
+        let skill = make_skill("shared-skill", "Shared Skill", false);
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "shared-skill".to_string(),
+                agent_id: "factory-droid".to_string(),
+                installed_path: "/tmp/.factory/skills/shared-skill".to_string(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "factory-droid",
+                "factory-droid::/tmp/.agents/skills/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.agents/skills/shared-skill",
+                "compatibility",
+                "/tmp/.agents/skills",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let skills = get_skills_by_agent_impl(&pool, "factory-droid")
+            .await
+            .unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "shared-skill");
+        assert!(!skills[0].is_read_only);
+        assert_eq!(skills[0].dir_path, "/tmp/.factory/skills/shared-skill");
+        assert!(skills[0].source_kind.is_none());
+    }
+
+    #[tokio::test]
     async fn test_get_skill_detail_with_row_impl_claude_plugin_row_uses_selected_observation() {
         let pool = setup_test_db().await;
 
@@ -1219,6 +1927,54 @@ mod tests {
         assert_eq!(detail.conflict_count, 2);
         assert_eq!(detail.installations.len(), 1);
         assert_eq!(detail.collections.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_skill_detail_with_row_impl_factory_compatibility_row_is_read_only() {
+        let pool = setup_test_db().await;
+
+        let skill = make_skill("shared-skill", "Shared Skill", true);
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "factory-droid",
+                "factory-droid::/tmp/.agents/skills/shared-skill",
+                "shared-skill",
+                "Shared Skill",
+                "/tmp/.agents/skills/shared-skill",
+                "compatibility",
+                "/tmp/.agents/skills",
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let detail = get_skill_detail_with_row_impl(
+            &pool,
+            "shared-skill",
+            Some("factory-droid"),
+            Some("factory-droid::/tmp/.agents/skills/shared-skill"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            detail.row_id,
+            "factory-droid::/tmp/.agents/skills/shared-skill"
+        );
+        assert_eq!(detail.source_kind.as_deref(), Some("compatibility"));
+        assert_eq!(detail.source_root.as_deref(), Some("/tmp/.agents/skills"));
+        assert!(detail.is_read_only);
+        assert!(
+            detail.installations.is_empty(),
+            "Factory .agents compatibility rows must not expose removable install records"
+        );
+        assert!(
+            detail.collections.is_empty(),
+            "read-only compatibility rows should not expose collection mutation state"
+        );
     }
 
     #[tokio::test]

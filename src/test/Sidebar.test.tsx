@@ -3,7 +3,7 @@ import { render, screen, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/layout/Sidebar";
 import { usePlatformStore } from "../stores/platformStore";
-import type { DiscoveredProject, DiscoveredSkill } from "../types";
+import type { DiscoveredProject, DiscoveredSkill, ObsidianVault } from "../types";
 import {
   OBSIDIAN_CROSS_AREA_FIXTURE,
   obsidianCrossAreaProjects,
@@ -24,8 +24,13 @@ vi.mock("../stores/discoverStore", () => ({
   useDiscoverStore: vi.fn(),
 }));
 
+vi.mock("../stores/obsidianStore", () => ({
+  useObsidianStore: vi.fn(),
+}));
+
 import { useCollectionStore } from "../stores/collectionStore";
 import { useDiscoverStore } from "../stores/discoverStore";
+import { useObsidianStore } from "../stores/obsidianStore";
 
 const mockAgents = [
   {
@@ -101,6 +106,16 @@ const defaultDiscoverState = {
   loadDiscoveredSkills: vi.fn(),
 };
 
+const defaultObsidianState = {
+  vaults: [],
+  skillsByVault: {},
+  isLoadingVaults: false,
+  loadingSkillsByVault: {},
+  error: null,
+  loadVaults: vi.fn(),
+  getVaultSkills: vi.fn(),
+};
+
 function LocationProbe() {
   const location = useLocation();
   return <div data-testid="location-path">{location.pathname}</div>;
@@ -140,10 +155,21 @@ function renderSidebar(
   initialPath = "/central",
   options: {
     discoverProjects?: DiscoveredProject[];
+    obsidianVaults?: ObsidianVault[];
     platformState?: SidebarPlatformState;
   } = {}
 ) {
   const discoveredProjects = options.discoverProjects ?? defaultDiscoverState.discoveredProjects;
+  const obsidianVaults = options.obsidianVaults ?? discoveredProjects
+    .filter((project) => project.skills.some((skill) => skill.platform_id === "obsidian"))
+    .map((project) => ({
+      id: project.project_path,
+      name: project.project_name,
+      path: project.project_path,
+      skill_count: new Set(project.skills
+        .filter((skill) => skill.platform_id === "obsidian")
+        .map((skill) => skill.id || skill.dir_path || skill.file_path)).size,
+    }));
   vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
   if (options.platformState) {
     vi.mocked(usePlatformStore).mockReturnValue(options.platformState);
@@ -154,6 +180,13 @@ function renderSidebar(
       ...defaultDiscoverState,
       discoveredProjects,
       totalSkillsFound: discoveredProjects.reduce((sum, project) => sum + project.skills.length, 0),
+    })
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  vi.mocked(useObsidianStore).mockImplementation((selector: any) =>
+    selector({
+      ...defaultObsidianState,
+      vaults: obsidianVaults,
     })
   );
   return render(
@@ -175,6 +208,10 @@ describe("Sidebar", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(useDiscoverStore).mockImplementation((selector: any) =>
       selector(defaultDiscoverState)
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(useObsidianStore).mockImplementation((selector: any) =>
+      selector(defaultObsidianState)
     );
   });
 
@@ -451,13 +488,14 @@ describe("Sidebar", () => {
     fireEvent.click(vaultButton);
 
     expect(screen.getByTestId("location-path")).toHaveTextContent(
-      `/discover/${encodeURIComponent(OBSIDIAN_CROSS_AREA_FIXTURE.vaultPath)}`
+      `/obsidian/${encodeURIComponent(OBSIDIAN_CROSS_AREA_FIXTURE.vaultPath)}`
     );
   });
 
   it("hides the Obsidian category when no vault projects contain Obsidian skills", () => {
     const ordinaryPath = "/workspace/app";
     renderSidebar("/central", {
+      obsidianVaults: [],
       discoverProjects: [
         createDiscoveredProject(ordinaryPath, "App", [
           createDiscoveredSkill({
@@ -475,7 +513,41 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("button", { name: /App/ })).not.toBeInTheDocument();
   });
 
-  it("navigates vault rows to the Discover route with exactly one encoded project path", () => {
+  it("renders Obsidian vaults from the vault store instead of discovered projects", () => {
+    renderSidebar("/central", {
+      discoverProjects: [
+        createDiscoveredProject("/wrong/0412", "0412", [
+          createDiscoveredSkill({ id: "wrong", project_path: "/wrong/0412", project_name: "0412" }),
+        ]),
+      ],
+      obsidianVaults: [
+        { id: "happy", name: "happy-geek", path: "/vaults/happy-geek", skill_count: 3 },
+        { id: "money", name: "make-money", path: "/vaults/make-money", skill_count: 2 },
+        { id: "wiz", name: "wiznote-bak", path: "/vaults/wiznote-bak", skill_count: 1 },
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: /happy-geek/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /make-money/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /wiznote-bak/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /0412/ })).not.toBeInTheDocument();
+  });
+
+  it("hides zero-skill Obsidian vaults from the vault store", () => {
+    renderSidebar("/central", {
+      obsidianVaults: [
+        { id: "happy", name: "happy-geek", path: "/vaults/happy-geek", skill_count: 0 },
+        { id: "money", name: "make-money", path: "/vaults/make-money", skill_count: 2 },
+        { id: "wiz", name: "wiznote-bak", path: "/vaults/wiznote-bak", skill_count: 0 },
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: /make-money/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /happy-geek/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /wiznote-bak/ })).not.toBeInTheDocument();
+  });
+
+  it("navigates vault rows to the Obsidian route with exactly one encoded vault id", () => {
     const vaultPath =
       "/Users/happypeet/Library/Mobile Documents/iCloud~md~obsidian/Documents/make money 100% #notes?中文";
     renderSidebar("/central", {
@@ -489,14 +561,14 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: /make money/ }));
 
     expect(screen.getByTestId("location-path")).toHaveTextContent(
-      `/discover/${encodeURIComponent(vaultPath)}`
+      `/obsidian/${encodeURIComponent(vaultPath)}`
     );
   });
 
-  it("marks the active vault row by full path and keeps collapsed rows accessible", () => {
+  it("marks the active vault row by id and keeps collapsed rows accessible", () => {
     const activePath = "/vaults/current";
     const otherPath = "/vaults/other";
-    renderSidebar(`/discover/${encodeURIComponent(activePath)}`, {
+    renderSidebar(`/obsidian/${encodeURIComponent(activePath)}`, {
       discoverProjects: [
         createDiscoveredProject(activePath, "Current", [
           createDiscoveredSkill({ id: "current-skill", project_path: activePath, project_name: "Current" }),
@@ -517,7 +589,7 @@ describe("Sidebar", () => {
     expect(collapsedVaultButton).toHaveAttribute("title", expect.stringContaining(otherPath));
     fireEvent.click(collapsedVaultButton);
     expect(screen.getByTestId("location-path")).toHaveTextContent(
-      `/discover/${encodeURIComponent(otherPath)}`
+      `/obsidian/${encodeURIComponent(otherPath)}`
     );
   });
 
@@ -551,7 +623,7 @@ describe("Sidebar", () => {
   it("disambiguates duplicate vault names by full path and highlights only the selected path", () => {
     const firstPath = "/Users/alice/Documents/Notes";
     const secondPath = "/Users/bob/Documents/Notes";
-    renderSidebar(`/discover/${encodeURIComponent(secondPath)}`, {
+    renderSidebar(`/obsidian/${encodeURIComponent(secondPath)}`, {
       discoverProjects: [
         createDiscoveredProject(firstPath, "Notes", [
           createDiscoveredSkill({ id: "first-skill", project_path: firstPath, project_name: "Notes" }),
@@ -571,11 +643,11 @@ describe("Sidebar", () => {
 
     fireEvent.click(noteButtons[0]);
     expect(screen.getByTestId("location-path")).toHaveTextContent(
-      `/discover/${encodeURIComponent(firstPath)}`
+      `/obsidian/${encodeURIComponent(firstPath)}`
     );
     fireEvent.click(noteButtons[1]);
     expect(screen.getByTestId("location-path")).toHaveTextContent(
-      `/discover/${encodeURIComponent(secondPath)}`
+      `/obsidian/${encodeURIComponent(secondPath)}`
     );
   });
 

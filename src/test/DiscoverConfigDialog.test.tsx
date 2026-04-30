@@ -129,6 +129,16 @@ describe("DiscoverConfigDialog", () => {
     expect(screen.getByText("Discover Project Skills")).toBeInTheDocument();
   });
 
+  it("uses a wider layout for long scan root paths", () => {
+    renderDialog();
+
+    const dialogContent = screen
+      .getByText("Discover Project Skills")
+      .closest("[data-slot='dialog-content']");
+    expect(dialogContent?.className).toEqual(expect.stringContaining("sm:max-w-2xl"));
+    expect(dialogContent?.className).not.toEqual(expect.stringContaining("sm:max-w-lg"));
+  });
+
   it("renders the dialog description", () => {
     renderDialog();
     expect(screen.getByText("Scan your project directories for skills not yet managed.")).toBeInTheDocument();
@@ -231,6 +241,23 @@ describe("DiscoverConfigDialog", () => {
       expect(chip.className).toEqual(expect.stringContaining("break-all"));
       expect(chip.className).toEqual(expect.stringContaining("whitespace-normal"));
     }
+  });
+
+  it("keeps vertical scrolling isolated to the scan roots list", () => {
+    renderDialog();
+
+    const dialogBody = screen
+      .getByText("Scan Roots")
+      .closest("[data-slot='dialog-body']");
+    expect(dialogBody?.className).toEqual(expect.stringContaining("max-h-none"));
+    expect(dialogBody?.className).toEqual(expect.stringContaining("overflow-visible"));
+    expect(dialogBody?.className).not.toEqual(expect.stringContaining("overflow-y-auto"));
+    expect(dialogBody?.className).not.toEqual(expect.stringContaining("max-h-[60vh]"));
+
+    const rootsList = screen
+      .getByRole("checkbox", { name: "/home/user/Documents" })
+      .closest("[class*='max-h-48']");
+    expect(rootsList?.className).toEqual(expect.stringContaining("overflow-y-auto"));
   });
 
   it("renders Cancel and Start Scan buttons", () => {

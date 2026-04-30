@@ -67,6 +67,39 @@ vi.mock("../stores/centralSkillsStore", () => ({
   }),
 }));
 
+vi.mock("../stores/discoverStore", () => ({
+  useDiscoverStore: vi.fn().mockImplementation((selector?: unknown) => {
+    const state = {
+      totalSkillsFound: 0,
+      discoveredProjects: [],
+      loadDiscoveredSkills: vi.fn().mockResolvedValue(undefined),
+      rescanFromDisk: vi.fn().mockResolvedValue(undefined),
+    };
+    if (typeof selector === "function") {
+      return selector(state);
+    }
+    return state;
+  }),
+}));
+
+vi.mock("../stores/obsidianStore", () => ({
+  useObsidianStore: vi.fn().mockImplementation((selector?: unknown) => {
+    const state = {
+      vaults: [],
+      skillsByVault: {},
+      isLoadingVaults: false,
+      loadingSkillsByVault: {},
+      error: null,
+      loadVaults: vi.fn().mockResolvedValue(undefined),
+      getVaultSkills: vi.fn().mockResolvedValue(undefined),
+    };
+    if (typeof selector === "function") {
+      return selector(state);
+    }
+    return state;
+  }),
+}));
+
 describe("App", () => {
   it("renders the app shell with top bar", async () => {
     await act(async () => {

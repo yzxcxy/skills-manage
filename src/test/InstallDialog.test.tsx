@@ -129,6 +129,22 @@ describe("InstallDialog", () => {
     expect(screen.getByText("已链接")).toBeInTheDocument();
   });
 
+  it("shows read-only universal platforms as checked and non-installable", () => {
+    renderDialog({
+      skill: {
+        ...mockSkill,
+        linked_agents: [],
+        read_only_agents: ["cursor"],
+      },
+    });
+
+    const cursorCheckbox = screen.getByLabelText("Cursor");
+    expect(cursorCheckbox).toBeChecked();
+    expect(cursorCheckbox).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("始终包含")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /安装到 0 个平台/i })).toBeDisabled();
+  });
+
   it("shows 'not detected' badge for undetected agents", () => {
     renderDialog();
     // gemini-cli has is_detected: false

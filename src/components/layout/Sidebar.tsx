@@ -16,83 +16,27 @@ import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
+import { useObsidianStore } from "@/stores/obsidianStore";
 import { cn } from "@/lib/utils";
 import { isEnabledInstallTargetAgent } from "@/lib/agents";
-import type { DiscoveredProject } from "@/types";
 
 const OBSIDIAN_PLATFORM_ID = "obsidian";
 
-interface ObsidianVaultRow {
-  projectPath: string;
-  projectName: string;
-  count: number;
-}
-
-function getProjectDisplayName(project: DiscoveredProject): string {
-  if (project.project_name) {
-    return project.project_name;
-  }
-
-  const pathSegments = project.project_path.split(/[\\/]/).filter(Boolean);
-  return pathSegments.at(-1) ?? project.project_path;
-}
-
-function getSkillDedupeKey(skill: DiscoveredProject["skills"][number]): string {
-  return skill.id || skill.dir_path || skill.file_path;
-}
-
-function getObsidianVaultRows(projects: DiscoveredProject[]): ObsidianVaultRow[] {
-  const rowsByPath = new Map<string, { projectName: string; skillIds: Set<string> }>();
-
-  for (const project of projects) {
-    for (const skill of project.skills) {
-      if (skill.platform_id !== OBSIDIAN_PLATFORM_ID) {
-        continue;
-      }
-
-      const existing = rowsByPath.get(project.project_path);
-      if (existing) {
-        existing.skillIds.add(getSkillDedupeKey(skill));
-      } else {
-        rowsByPath.set(project.project_path, {
-          projectName: getProjectDisplayName(project),
-          skillIds: new Set([getSkillDedupeKey(skill)]),
-        });
-      }
-    }
-  }
-
-  return Array.from(rowsByPath.entries())
-    .map(([projectPath, value]) => ({
-      projectPath,
-      projectName: value.projectName,
-      count: value.skillIds.size,
-    }))
-    .filter((row) => row.count > 0)
-    .sort((a, b) => {
-      const byName = a.projectName.localeCompare(b.projectName);
-      if (byName !== 0) {
-        return byName;
-      }
-      return a.projectPath.localeCompare(b.projectPath);
-    });
-}
-
-function getActiveDiscoverProjectPath(pathname: string): string | null {
-  const discoverProjectPrefix = "/discover/";
-  if (!pathname.startsWith(discoverProjectPrefix)) {
+function getActiveObsidianVaultId(pathname: string): string | null {
+  const obsidianPrefix = "/obsidian/";
+  if (!pathname.startsWith(obsidianPrefix)) {
     return null;
   }
 
-  const encodedProjectPath = pathname.slice(discoverProjectPrefix.length);
-  if (!encodedProjectPath) {
+  const encodedVaultId = pathname.slice(obsidianPrefix.length);
+  if (!encodedVaultId) {
     return null;
   }
 
   try {
-    return decodeURIComponent(encodedProjectPath);
+    return decodeURIComponent(encodedVaultId);
   } catch {
-    return encodedProjectPath;
+    return encodedVaultId;
   }
 }
 
@@ -171,8 +115,9 @@ export function Sidebar() {
   const loadCollections = useCollectionStore((s) => s.loadCollections);
 
   const totalDiscovered = useDiscoverStore((s) => s.totalSkillsFound);
-  const discoveredProjects = useDiscoverStore((s) => s.discoveredProjects);
   const loadDiscoveredSkills = useDiscoverStore((s) => s.loadDiscoveredSkills);
+  const obsidianVaults = useObsidianStore((s) => s.vaults);
+  const loadObsidianVaults = useObsidianStore((s) => s.loadVaults);
 
   const [expanded, setExpanded] = useState(true);
   const [showAllPlatforms, setShowAllPlatforms] = useState(() => {
@@ -186,7 +131,8 @@ export function Sidebar() {
   useEffect(() => {
     loadCollections();
     loadDiscoveredSkills();
-  }, [loadCollections, loadDiscoveredSkills]);
+    loadObsidianVaults();
+  }, [loadCollections, loadDiscoveredSkills, loadObsidianVaults]);
 
   function toggleShowAllPlatforms() {
     setShowAllPlatforms((previous) => {
@@ -207,8 +153,8 @@ export function Sidebar() {
   );
   const lobsterAgents = platformAgents.filter((a) => a.category === "lobster");
   const codingAgents = platformAgents.filter((a) => a.category !== "lobster");
-  const obsidianVaultRows = getObsidianVaultRows(discoveredProjects);
-  const activeDiscoverProjectPath = getActiveDiscoverProjectPath(pathname);
+  const populatedObsidianVaults = obsidianVaults.filter((vault) => vault.skill_count > 0);
+  const activeObsidianVaultId = getActiveObsidianVaultId(pathname);
 
   const isCollectionActive = pathname === "/collections";
 
@@ -309,7 +255,7 @@ export function Sidebar() {
         ) : (
           <>
             {/* Obsidian vaults */}
-            {obsidianVaultRows.length > 0 && (
+            {populatedObsidianVaults.length > 0 && (
               <>
                 {expanded ? (
                   <div className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider px-2.5 pt-2 pb-1">
@@ -318,23 +264,23 @@ export function Sidebar() {
                 ) : (
                   <div className="border-t border-sidebar-border/40 my-1.5" />
                 )}
-                {obsidianVaultRows.map((vault) => {
+                {populatedObsidianVaults.map((vault) => {
                   const vaultAccessibleLabel = t("sidebar.obsidianVaultLabel", {
-                    name: vault.projectName,
-                    count: vault.count,
-                    path: vault.projectPath,
+                    name: vault.name,
+                    count: vault.skill_count,
+                    path: vault.path,
                   });
                   return (
                     <NavItem
-                      key={vault.projectPath}
-                      label={vault.projectName}
+                      key={vault.id}
+                      label={vault.name}
                       ariaLabel={vaultAccessibleLabel}
                       title={vaultAccessibleLabel}
-                      isActive={activeDiscoverProjectPath === vault.projectPath}
-                      onClick={() => navigate(`/discover/${encodeURIComponent(vault.projectPath)}`)}
+                      isActive={activeObsidianVaultId === vault.id}
+                      onClick={() => navigate(`/obsidian/${encodeURIComponent(vault.id)}`)}
                       icon={<PlatformIcon agentId={OBSIDIAN_PLATFORM_ID} className="size-4" />}
                       expanded={expanded}
-                      count={vault.count}
+                      count={vault.skill_count}
                     />
                   );
                 })}

@@ -10,8 +10,17 @@ import { useSkillStore } from "@/stores/skillStore";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { InstallDialog } from "@/components/central/InstallDialog";
+import { PlatformInstallDrawer } from "@/components/central/PlatformInstallDrawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AgentWithStatus, ScannedSkill, SkillWithLinks } from "@/types";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
@@ -64,6 +73,7 @@ const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     created_at: "2026-04-17T00:00:00.000Z",
     updated_at: "2026-04-17T00:00:00.000Z",
     linked_agents: ["claude-code"],
+    read_only_agents: [],
   },
 ];
 
@@ -84,6 +94,15 @@ const noopGetSkillsByAgent = async (_agentId: string) => {};
 const noopPreviewGitHubRepoImport = async () => null;
 const noopResetGitHubImport = () => {};
 const noopTogglePlatformLink = async (_skillId: string, _agentId: string) => {};
+const noopDeleteCentralSkill = async (
+  _skillId: string,
+  _options: { cascadeUninstall: boolean }
+) => ({
+  skillId: _skillId,
+  removedCanonicalPath: "",
+  uninstalledAgents: [],
+  skippedReadOnlyAgents: [],
+});
 const noopInstallSkill = async () => ({
   succeeded: [],
   failed: [],
@@ -190,7 +209,11 @@ export function CentralSkillsView() {
   const togglePlatformLink =
     useCentralSkillsStore((state) => state.togglePlatformLink) ??
     noopTogglePlatformLink;
+  const deleteCentralSkill =
+    useCentralSkillsStore((state) => state.deleteCentralSkill) ??
+    noopDeleteCentralSkill;
   const togglingAgentId = useCentralSkillsStore((state) => state.togglingAgentId);
+  const deletingSkillId = useCentralSkillsStore((state) => state.deletingSkillId);
 
   // Keep the platform sidebar counts in sync after install.
   const refreshCounts =
@@ -218,9 +241,13 @@ export function CentralSkillsView() {
   const [searchQuery, setSearchQuery] = useState("");
   const [installTargetSkill, setInstallTargetSkill] =
     useState<SkillWithLinks | null>(null);
+  const [deleteTargetSkill, setDeleteTargetSkill] =
+    useState<SkillWithLinks | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [drawerSkillId, setDrawerSkillId] = useState<string | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [platformDrawerSkillId, setPlatformDrawerSkillId] = useState<string | null>(null);
+  const [isPlatformDrawerOpen, setIsPlatformDrawerOpen] = useState(false);
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
   const [githubRepoUrl, setGitHubRepoUrl] = useState("");
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -287,6 +314,13 @@ export function CentralSkillsView() {
     setIsDialogOpen(true);
   }
 
+  function linkedAgentNames(skill: SkillWithLinks): string[] {
+    const namesById = new Map(agents.map((agent) => [agent.id, agent.display_name]));
+    return Array.from(new Set([...skill.linked_agents, ...(skill.read_only_agents ?? [])])).map(
+      (agentId) => namesById.get(agentId) ?? agentId
+    );
+  }
+
   const sortFieldOptions: Array<{ value: SortField; label: string }> = [
     { value: "name", label: t("central.sortByName") },
     { value: "createdAt", label: t("central.sortByCreatedAt") },
@@ -305,6 +339,11 @@ export function CentralSkillsView() {
   function handleOpenDrawer(skillId: string) {
     setDrawerSkillId(skillId);
     setIsDrawerOpen(true);
+  }
+
+  function handleOpenPlatformDrawer(skillId: string) {
+    setPlatformDrawerSkillId(skillId);
+    setIsPlatformDrawerOpen(true);
   }
 
   async function handleTogglePlatform(skillId: string, agentId: string) {
@@ -328,6 +367,26 @@ export function CentralSkillsView() {
     } catch (err) {
       toast.error(t("central.installError", { error: String(err) }));
     }
+  }
+
+  async function handleDeleteCentralSkill(skill: SkillWithLinks, cascadeUninstall: boolean) {
+    try {
+      await deleteCentralSkill(skill.id, { cascadeUninstall });
+      await refreshCounts();
+      toast.success(t("central.deleteSuccess", { name: skill.name }));
+      setDeleteTargetSkill(null);
+    } catch (err) {
+      toast.error(t("central.deleteError", { error: String(err) }));
+    }
+  }
+
+  function handleDeleteClick(skill: SkillWithLinks) {
+    if (skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0) {
+      setDeleteTargetSkill(skill);
+      return;
+    }
+
+    void handleDeleteCentralSkill(skill, false);
   }
 
   async function handleRefresh() {
@@ -384,6 +443,10 @@ export function CentralSkillsView() {
     () => (agents.length > 0 ? agents : platformAgents),
     [agents, platformAgents]
   );
+  const platformDrawerSkill = useMemo(
+    () => skills.find((skill) => skill.id === platformDrawerSkillId) ?? null,
+    [platformDrawerSkillId, skills]
+  );
 
   async function handleAfterImportSuccess() {
     const agentIds = Object.keys(skillsByAgent);
@@ -399,8 +462,23 @@ export function CentralSkillsView() {
         description={skill.description}
         onDetail={() => handleOpenDrawer(skill.id)}
         onInstallTo={() => handleInstallClick(skill)}
+        onDeleteFromCentral={() => handleDeleteClick(skill)}
+        deleteFromCentralLabel={t("central.deleteFromCentralLabel", { name: skill.name })}
+        deleteFromCentralRequiresDialog={
+          skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0
+        }
+        isLoading={deletingSkillId === skill.id}
         detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
         className="h-[104px]"
+        platformIcons={{
+          agents,
+          linkedAgents: skill.linked_agents,
+          readOnlyAgents: skill.read_only_agents ?? [],
+          skillId: skill.id,
+          onToggle: handleTogglePlatform,
+          onManage: () => handleOpenPlatformDrawer(skill.id),
+          togglingAgentId,
+        }}
       />
     );
   }
@@ -532,12 +610,20 @@ export function CentralSkillsView() {
                 description={skill.description}
                 onDetail={() => handleOpenDrawer(skill.id)}
                 onInstallTo={() => handleInstallClick(skill)}
+                onDeleteFromCentral={() => handleDeleteClick(skill)}
+                deleteFromCentralLabel={t("central.deleteFromCentralLabel", { name: skill.name })}
+                deleteFromCentralRequiresDialog={
+                  skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0
+                }
+                isLoading={deletingSkillId === skill.id}
                 detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
                 platformIcons={{
                   agents,
                   linkedAgents: skill.linked_agents,
+                  readOnlyAgents: skill.read_only_agents ?? [],
                   skillId: skill.id,
                   onToggle: handleTogglePlatform,
+                  onManage: () => handleOpenPlatformDrawer(skill.id),
                   togglingAgentId,
                 }}
               />
@@ -573,6 +659,28 @@ export function CentralSkillsView() {
         }
       />
 
+      <PlatformInstallDrawer
+        open={isPlatformDrawerOpen}
+        skill={platformDrawerSkill}
+        agents={agents}
+        togglingAgentId={togglingAgentId}
+        onOpenChange={(open) => {
+          setIsPlatformDrawerOpen(open);
+          if (!open) {
+            setPlatformDrawerSkillId(null);
+          }
+        }}
+        onToggle={handleTogglePlatform}
+        onOpenInstallDialog={() => {
+          if (platformDrawerSkill) {
+            setInstallTargetSkill(platformDrawerSkill);
+            setIsPlatformDrawerOpen(false);
+            setPlatformDrawerSkillId(null);
+            setIsDialogOpen(true);
+          }
+        }}
+      />
+
       <GitHubRepoImportWizard
         open={isGitHubImportOpen}
         onOpenChange={setIsGitHubImportOpen}
@@ -595,6 +703,48 @@ export function CentralSkillsView() {
         }}
         launcherLabel={t("central.title")}
       />
+
+      <Dialog
+        open={!!deleteTargetSkill}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTargetSkill(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("central.deleteConfirmTitle", { name: deleteTargetSkill?.name ?? "" })}
+            </DialogTitle>
+            <DialogDescription>
+              {deleteTargetSkill
+                ? t("central.deleteLinkedWarning", {
+                    platforms: linkedAgentNames(deleteTargetSkill).join(", "),
+                  })
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteTargetSkill(null)}
+              disabled={!!deleteTargetSkill && deletingSkillId === deleteTargetSkill.id}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (deleteTargetSkill) {
+                  void handleDeleteCentralSkill(deleteTargetSkill, true);
+                }
+              }}
+              disabled={!!deleteTargetSkill && deletingSkillId === deleteTargetSkill.id}
+            >
+              {t("central.deleteCascadeLabel")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
