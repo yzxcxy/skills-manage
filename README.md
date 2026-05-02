@@ -204,6 +204,10 @@ The SQLite database lives at `~/.skillsmanage/db.sqlite` and is initialized auto
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, validation commands, and pull request expectations.
 
+## Community
+
+Join the Discord community: <https://discord.gg/fuGURex5fV>
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and data-handling notes.

@@ -201,6 +201,10 @@ SQLite 数据库位于 `~/.skillsmanage/db.sqlite`，首次启动时会自动初
 
 开发环境、验证命令和 PR 约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+## 社区交流
+
+加入 Discord 交流群：<https://discord.gg/fuGURex5fV>
+
 ## 安全报告
 
 漏洞反馈和数据处理说明见 [SECURITY.md](SECURITY.md)。
