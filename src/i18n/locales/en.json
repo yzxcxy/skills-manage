@@ -87,7 +87,7 @@
   },
   "central": {
     "title": "Central Skills",
-    "path": "~/.agents/skills/",
+    "path": "~/.skillsmanage/central/",
     "searchPlaceholder": "Search central skills...",
     "loading": "Loading skills...",
     "noMatch": "No skills match \"{{query}}\"",
@@ -251,6 +251,10 @@
     "deleteLabel": "Delete collection",
     "batchInstall": "Batch install to...",
     "batchInstallLabel": "Batch install collection",
+    "batchUninstall": "Batch uninstall from...",
+    "batchUninstallLabel": "Batch uninstall collection",
+    "batchDeleteSkills": "Delete all skills",
+    "batchDeleteSkillsLabel": "Delete all skills in collection",
     "addSkill": "Add Skill",
     "addSkillLabel": "Add skill to collection",
     "skills": "Skills ({{count}})",
@@ -264,7 +268,14 @@
     "deleteConfirm": "Delete collection \"{{name}}\"? This cannot be undone.",
     "deleteError": "Failed to delete collection: {{error}}",
     "exportError": "Export failed: {{error}}",
-    "addSkillError": "Failed to add skill: {{error}}"
+    "addSkillError": "Failed to add skill: {{error}}",
+    "uninstallPartialFail": "Partial uninstall failed on: {{platforms}}",
+    "uninstallSuccess": "All skills uninstalled successfully.",
+    "uninstallError": "Uninstall failed: {{error}}",
+    "deleteSkillsConfirm": "Delete all {{count}} skills in collection \"{{name}}\"? This will remove them from the central directory and cannot be undone.",
+    "deleteSkillsPartialFail": "Some skills could not be deleted: {{skills}}",
+    "deleteSkillsSuccess": "Deleted {{count}} skills successfully.",
+    "deleteSkillsError": "Failed to delete skills: {{error}}"
   },
   "collectionEditor": {
     "createTitle": "New Collection",
@@ -292,6 +303,19 @@
     "cancel": "Cancel",
     "install": "Install to {{count}} platform{{count, select, 1 {} other {s}}}",
     "installing": "Installing...",
+    "selectPlatform": "Please select at least one platform.",
+    "selectPlatforms": "Select platforms"
+  },
+  "batchUninstall": {
+    "title": "Batch Uninstall — {{name}}",
+    "desc": "Uninstall {{count}} Skills in this Collection from the selected platforms.",
+    "noPlatforms": "No platforms detected. Add platforms in Settings.",
+    "notDetected": "(not detected)",
+    "succeeded": "{{succeeded}} succeeded, {{failed}} failed:",
+    "close": "Close",
+    "cancel": "Cancel",
+    "action": "Uninstall from {{count}} platform{{count, select, 1 {} other {s}}}",
+    "working": "Uninstalling...",
     "selectPlatform": "Please select at least one platform.",
     "selectPlatforms": "Select platforms"
   },
@@ -411,7 +435,7 @@
   },
   "empty": {
     "welcomeTitle": "Welcome to skills-manage!",
-    "welcomeDesc": "No skills found in ~/.agents/skills/. Get started by creating a SKILL.md file there, or add custom scan directories in Settings.",
+    "welcomeDesc": "No skills found in ~/.skillsmanage/central/. Get started by creating a SKILL.md file there, or add custom scan directories in Settings.",
     "createHint": "Create a skill directory at",
     "goToSettings": "Go to Settings"
   },
@@ -616,6 +640,7 @@
     "githubImportResultNextDesc": "Choose what you want to do next now that the repo import is complete.",
     "githubImportResultActionInstall": "Continue platform setup",
     "githubImportResultActionCentral": "Open Central",
+    "githubImportResultActionCollection": "Open Collection",
     "githubImportResultActionRestart": "Start another import",
     "githubImportResultSkippedTitle": "Skipped items",
     "githubImportResultSkippedNone": "No skills were skipped.",

@@ -905,6 +905,21 @@ export function GitHubRepoImportWizard({
                       <ArrowRight className="size-4" />
                     </Button>
                   ) : null}
+                  {currentImportResult.collectionId ? (
+                    <Button
+                      variant="outline"
+                      className="justify-between"
+                      onClick={() => {
+                        onOpenChange(false);
+                        navigate("/collections", {
+                          state: { collectionContext: { collectionId: currentImportResult.collectionId } },
+                        });
+                      }}
+                    >
+                      <span>{t("marketplace.githubImportResultActionCollection")}</span>
+                      <ArrowRight className="size-4" />
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     className="justify-between"

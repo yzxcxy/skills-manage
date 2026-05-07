@@ -1848,7 +1848,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('cursor', 'central')")
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('codex', 'central')")
             .execute(&pool)
             .await
             .unwrap();
@@ -1857,9 +1857,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cursor_root = tmp.path().join(".cursor/skills");
+        let codex_root = tmp.path().join(".codex/skills");
         let shared_root = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&cursor_root).unwrap();
+        fs::create_dir_all(&codex_root).unwrap();
         fs::create_dir_all(&shared_root).unwrap();
 
         create_skill_dir(
@@ -1868,8 +1868,8 @@ mod tests {
             &valid_skill_md("Shared Skill", "Universal compatibility skill"),
         );
 
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
-            .bind(cursor_root.to_string_lossy().to_string())
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
+            .bind(codex_root.to_string_lossy().to_string())
             .execute(&pool)
             .await
             .unwrap();
@@ -1881,22 +1881,22 @@ mod tests {
 
         let result = scan_all_skills_impl(&pool).await.unwrap();
 
-        assert_eq!(result.skills_by_agent.get("cursor").copied(), Some(1));
-        let observations = db::get_agent_skill_observations(&pool, "cursor")
+        assert_eq!(result.skills_by_agent.get("codex").copied(), Some(1));
+        let observations = db::get_agent_skill_observations(&pool, "codex")
             .await
             .unwrap();
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].source_kind, "compatibility");
         assert!(observations[0].is_read_only);
 
-        let cursor_installations: Vec<_> = db::get_skill_installations(&pool, "shared-skill")
+        let codex_installations: Vec<_> = db::get_skill_installations(&pool, "shared-skill")
             .await
             .unwrap()
             .into_iter()
-            .filter(|installation| installation.agent_id == "cursor")
+            .filter(|installation| installation.agent_id == "codex")
             .collect();
         assert!(
-            cursor_installations.is_empty(),
+            codex_installations.is_empty(),
             "shared .agents skills must not be persisted as removable universal-agent installs"
         );
     }
@@ -1906,7 +1906,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('antigravity', 'central')")
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('codex', 'central')")
             .execute(&pool)
             .await
             .unwrap();
@@ -1924,7 +1924,7 @@ mod tests {
         );
 
         sqlx::query(
-            "UPDATE agents SET global_skills_dir = ? WHERE id IN ('antigravity', 'central')",
+            "UPDATE agents SET global_skills_dir = ? WHERE id IN ('codex', 'central')",
         )
         .bind(shared_root.to_string_lossy().to_string())
         .execute(&pool)
@@ -1933,22 +1933,22 @@ mod tests {
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let observations = db::get_agent_skill_observations(&pool, "antigravity")
+        let observations = db::get_agent_skill_observations(&pool, "codex")
             .await
             .unwrap();
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].source_kind, "compatibility");
         assert!(observations[0].is_read_only);
 
-        let antigravity_installations: Vec<_> =
+        let codex_installations: Vec<_> =
             db::get_skill_installations(&pool, "native-universal-skill")
                 .await
                 .unwrap()
                 .into_iter()
-                .filter(|installation| installation.agent_id == "antigravity")
+                .filter(|installation| installation.agent_id == "codex")
                 .collect();
         assert!(
-            antigravity_installations.is_empty(),
+            codex_installations.is_empty(),
             "universal platforms that use .agents/skills as primary root must remain read-only"
         );
     }

@@ -95,6 +95,8 @@ const defaultCollectionState = {
   addSkillToCollection: vi.fn(),
   removeSkillFromCollection: vi.fn(),
   batchInstallCollection: vi.fn(),
+  batchUninstallCollection: vi.fn(),
+  batchDeleteCollectionSkills: vi.fn(),
   exportCollection: vi.fn(),
   importCollection: vi.fn(),
   refreshCounts: vi.fn(),

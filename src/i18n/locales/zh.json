@@ -87,7 +87,7 @@
   },
   "central": {
     "title": "中央技能库",
-    "path": "~/.agents/skills/",
+    "path": "~/.skillsmanage/central/",
     "searchPlaceholder": "搜索中央技能库...",
     "loading": "正在加载技能...",
     "noMatch": "没有匹配的技能「{{query}}」",
@@ -251,6 +251,10 @@
     "deleteLabel": "删除技能集",
     "batchInstall": "批量安装到...",
     "batchInstallLabel": "批量安装技能集",
+    "batchUninstall": "批量卸载从...",
+    "batchUninstallLabel": "批量卸载技能集",
+    "batchDeleteSkills": "删除所有技能",
+    "batchDeleteSkillsLabel": "删除技能集中所有技能",
     "addSkill": "添加技能",
     "addSkillLabel": "添加技能到技能集",
     "skills": "技能 ({{count}})",
@@ -264,7 +268,14 @@
     "deleteConfirm": "删除技能集「{{name}}」？此操作不可撤销。",
     "deleteError": "删除技能集失败: {{error}}",
     "exportError": "导出失败: {{error}}",
-    "addSkillError": "添加技能失败: {{error}}"
+    "addSkillError": "添加技能失败: {{error}}",
+    "uninstallPartialFail": "部分卸载失败：{{platforms}}",
+    "uninstallSuccess": "所有技能卸载成功。",
+    "uninstallError": "卸载失败：{{error}}",
+    "deleteSkillsConfirm": "删除技能集「{{name}}」中的 {{count}} 个技能？这将从中央目录中移除它们，不可撤销。",
+    "deleteSkillsPartialFail": "部分技能删除失败：{{skills}}",
+    "deleteSkillsSuccess": "成功删除 {{count}} 个技能。",
+    "deleteSkillsError": "删除技能失败：{{error}}"
   },
   "collectionEditor": {
     "createTitle": "新建技能集",
@@ -292,6 +303,19 @@
     "cancel": "取消",
     "install": "安装到 {{count}} 个平台",
     "installing": "安装中...",
+    "selectPlatform": "请至少选择一个平台。",
+    "selectPlatforms": "选择平台"
+  },
+  "batchUninstall": {
+    "title": "批量卸载 — {{name}}",
+    "desc": "从选中的平台卸载此技能集中的 {{count}} 个技能。",
+    "noPlatforms": "未检测到平台。请在设置中添加平台。",
+    "notDetected": "(未检测到)",
+    "succeeded": "{{succeeded}} 个成功，{{failed}} 个失败：",
+    "close": "关闭",
+    "cancel": "取消",
+    "action": "从 {{count}} 个平台卸载",
+    "working": "卸载中...",
     "selectPlatform": "请至少选择一个平台。",
     "selectPlatforms": "选择平台"
   },
@@ -411,7 +435,7 @@
   },
   "empty": {
     "welcomeTitle": "欢迎使用 skills-manage！",
-    "welcomeDesc": "在 ~/.agents/skills/ 中未找到任何技能。请在该目录创建一个 SKILL.md 文件，或在设置中添加自定义扫描目录。",
+    "welcomeDesc": "在 ~/.skillsmanage/central/ 中未找到任何技能。请在该目录创建一个 SKILL.md 文件，或在设置中添加自定义扫描目录。",
     "createHint": "在此目录创建一个技能：",
     "goToSettings": "前往设置"
   },
@@ -616,6 +640,7 @@
     "githubImportResultNextDesc": "仓库导入已经完成，现在可以继续执行下一步操作。",
     "githubImportResultActionInstall": "继续配置平台安装",
     "githubImportResultActionCentral": "打开中央技能库",
+    "githubImportResultActionCollection": "打开技能集",
     "githubImportResultActionRestart": "开始新的导入",
     "githubImportResultSkippedTitle": "已跳过项目",
     "githubImportResultSkippedNone": "没有跳过任何技能。",

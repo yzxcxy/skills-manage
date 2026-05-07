@@ -10,7 +10,7 @@
 
 ## Overview
 
-`skills-manage` follows the [Agent Skills](https://github.com/anthropics/agent-skills) open pattern and uses `~/.agents/skills/` as the canonical central directory. Skills can then be installed to individual platforms through symlinks, so one source of truth can drive multiple AI coding tools.
+`skills-manage` uses `~/.skillsmanage/central/` as the canonical central directory. Skills are stored there as the single source of truth, and can then be installed to individual platforms through symlinks or copies, so you can control exactly which skills each AI coding tool sees.
 
 ## Highlights
 

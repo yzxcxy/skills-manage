@@ -4,7 +4,10 @@ use tauri::State;
 use crate::db::{self, Collection, DbPool, Skill};
 use crate::AppState;
 
-use super::linker::{install_skill_to_agent_impl, BatchInstallResult, FailedInstall};
+use super::linker::{
+    install_skill_to_agent_impl, uninstall_skill_from_agent_impl, BatchInstallResult, FailedInstall,
+};
+use crate::path_utils::central_skills_dir;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,6 +171,146 @@ pub async fn batch_install_collection_impl(
     Ok(BatchInstallResult { succeeded, failed })
 }
 
+/// Uninstall all skills in a collection from the given agents.
+///
+/// Each (skill, agent) pair is attempted independently. Failures are collected
+/// in the `failed` list rather than aborting the whole batch.
+pub async fn batch_uninstall_collection_impl(
+    pool: &DbPool,
+    collection_id: &str,
+    agent_ids: &[String],
+) -> Result<BatchInstallResult, String> {
+    db::get_collection_by_id(pool, collection_id)
+        .await?
+        .ok_or_else(|| format!("Collection '{}' not found", collection_id))?;
+
+    let skills = db::get_collection_skills(pool, collection_id).await?;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for skill in &skills {
+        for agent_id in agent_ids {
+            match uninstall_skill_from_agent_impl(pool, &skill.id, agent_id).await {
+                Ok(_) => succeeded.push(format!("{}:{}", skill.id, agent_id)),
+                Err(e) => failed.push(FailedInstall {
+                    agent_id: format!("{}:{}", skill.id, agent_id),
+                    error: e,
+                }),
+            }
+        }
+    }
+
+    Ok(BatchInstallResult { succeeded, failed })
+}
+
+/// Describes a single failed delete within a batch operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedDelete {
+    pub skill_id: String,
+    pub error: String,
+}
+
+/// Result of a batch delete operation on collection skills.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchDeleteResult {
+    pub deleted_skill_ids: Vec<String>,
+    pub failed: Vec<FailedDelete>,
+}
+
+/// Delete all skills in a collection from the central directory and database.
+///
+/// Also removes the collection itself after deleting all skills.
+/// Each skill is attempted independently; failures are collected rather than
+/// aborting the whole batch.
+pub async fn batch_delete_collection_skills_impl(
+    pool: &DbPool,
+    collection_id: &str,
+) -> Result<BatchDeleteResult, String> {
+    db::get_collection_by_id(pool, collection_id)
+        .await?
+        .ok_or_else(|| format!("Collection '{}' not found", collection_id))?;
+
+    let skills = db::get_collection_skills(pool, collection_id).await?;
+
+    let central_dir = central_skills_dir();
+    let mut deleted_skill_ids = Vec::new();
+    let mut failed = Vec::new();
+
+    for skill in &skills {
+        // 1. Uninstall from all agents first to avoid broken symlinks.
+        let installations = db::get_skill_installations(pool, &skill.id).await?;
+        for installation in &installations {
+            if let Err(e) = uninstall_skill_from_agent_impl(pool, &skill.id, &installation.agent_id).await {
+                failed.push(FailedDelete {
+                    skill_id: skill.id.clone(),
+                    error: format!(
+                        "Failed to uninstall from agent '{}': {}",
+                        installation.agent_id, e
+                    ),
+                });
+                // Continue to next skill — don't try to delete a skill that still has installations.
+                continue;
+            }
+        }
+
+        // 2. Remove the canonical directory from disk.
+        let dir_removed = if let Some(ref canonical) = skill.canonical_path {
+            let path = std::path::PathBuf::from(canonical);
+            if path.exists() {
+                std::fs::remove_dir_all(&path)
+                    .map_err(|e| format!("Failed to remove directory: {}", e))
+                    .is_ok()
+            } else {
+                true
+            }
+        } else {
+            let fallback = central_dir.join(&skill.id);
+            if fallback.exists() {
+                std::fs::remove_dir_all(&fallback)
+                    .map_err(|e| format!("Failed to remove directory: {}", e))
+                    .is_ok()
+            } else {
+                true
+            }
+        };
+
+        if !dir_removed {
+            failed.push(FailedDelete {
+                skill_id: skill.id.clone(),
+                error: "Failed to remove skill directory".to_string(),
+            });
+            continue;
+        }
+
+        // 3. Delete from database (installations, collection links, explanations, etc.).
+        if let Err(e) = db::delete_central_skill_records(pool, &skill.id, &skill.name).await {
+            failed.push(FailedDelete {
+                skill_id: skill.id.clone(),
+                error: format!("Failed to delete DB records: {}", e),
+            });
+            continue;
+        }
+
+        deleted_skill_ids.push(skill.id.clone());
+    }
+
+    // Only delete the collection itself if every skill was successfully removed.
+    if failed.is_empty() {
+        if let Err(e) = db::delete_collection(pool, collection_id).await {
+            eprintln!(
+                "[batch_delete_collection_skills] Failed to delete collection '{}': {}",
+                collection_id, e
+            );
+        }
+    }
+
+    Ok(BatchDeleteResult {
+        deleted_skill_ids,
+        failed,
+    })
+}
+
 /// Export a collection to a JSON string matching the spec in docs/desktop-design.md.
 pub async fn export_collection_impl(pool: &DbPool, collection_id: &str) -> Result<String, String> {
     let collection = db::get_collection_by_id(pool, collection_id)
@@ -294,6 +437,25 @@ pub async fn batch_install_collection(
     agent_ids: Vec<String>,
 ) -> Result<BatchInstallResult, String> {
     batch_install_collection_impl(&state.db, &collection_id, &agent_ids).await
+}
+
+/// Tauri command: uninstall all skills in a collection from the given agents.
+#[tauri::command]
+pub async fn batch_uninstall_collection(
+    state: State<'_, AppState>,
+    collection_id: String,
+    agent_ids: Vec<String>,
+) -> Result<BatchInstallResult, String> {
+    batch_uninstall_collection_impl(&state.db, &collection_id, &agent_ids).await
+}
+
+/// Tauri command: delete all skills in a collection from central and DB.
+#[tauri::command]
+pub async fn batch_delete_collection_skills(
+    state: State<'_, AppState>,
+    collection_id: String,
+) -> Result<BatchDeleteResult, String> {
+    batch_delete_collection_skills_impl(&state.db, &collection_id).await
 }
 
 /// Tauri command: export a collection to a JSON string.

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::path_utils::{path_to_string, resolve_home_dir};
+use crate::path_utils::{app_data_dir, path_to_string, resolve_home_dir};
 
 pub type DbPool = SqlitePool;
 
@@ -475,8 +475,7 @@ async fn seed_builtin_agents(pool: &DbPool) -> Result<(), String> {
 /// Seed `scan_directories` with one row per unique `global_skills_dir` path
 /// across all built-in agents.  Rows are marked `is_builtin = 1` and cannot
 /// be removed by the user.  `INSERT OR IGNORE` keeps the operation idempotent:
-/// if two built-in agents share the same path (codex and central both use
-/// `~/.agents/skills`) only the first insert takes effect.
+/// if two built-in agents share the same path only the first insert takes effect.
 async fn seed_builtin_scan_directories(pool: &DbPool) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     for agent in builtin_agents() {
@@ -583,21 +582,7 @@ async fn ensure_column(
     Ok(())
 }
 
-pub const UNIVERSAL_AGENTS_SKILLS_AGENT_IDS: &[&str] = &[
-    "amp",
-    "antigravity",
-    "cline",
-    "codex",
-    "cursor",
-    "deep-agents",
-    "dexto",
-    "firebender",
-    "gemini-cli",
-    "copilot",
-    "kimi-code-cli",
-    "opencode",
-    "warp",
-];
+pub const UNIVERSAL_AGENTS_SKILLS_AGENT_IDS: &[&str] = &["codex"];
 
 pub fn agent_supports_universal_agents_skills(agent_id: &str) -> bool {
     UNIVERSAL_AGENTS_SKILLS_AGENT_IDS.contains(&agent_id)
@@ -656,25 +641,25 @@ pub fn builtin_agents() -> Vec<Agent> {
             "antigravity",
             "Antigravity",
             "coding",
-            ".agents/skills",
+            ".antigravity/skills",
             None,
             "antigravity",
         ),
-        agent("cline", "Cline", "coding", ".agents/skills", None, "cline"),
+        agent("cline", "Cline", "coding", ".cline/skills", None, "cline"),
         agent(
             "deep-agents",
             "Deep Agents",
             "coding",
-            ".agents/skills",
+            ".deep-agents/skills",
             None,
             "deep-agents",
         ),
-        agent("dexto", "Dexto", "coding", ".agents/skills", None, "dexto"),
+        agent("dexto", "Dexto", "coding", ".dexto/skills", None, "dexto"),
         agent(
             "firebender",
             "Firebender",
             "coding",
-            ".agents/skills",
+            ".firebender/skills",
             None,
             "firebender",
         ),
@@ -690,7 +675,7 @@ pub fn builtin_agents() -> Vec<Agent> {
             "kimi-code-cli",
             "Kimi Code CLI",
             "coding",
-            ".agents/skills",
+            ".kimi-code-cli/skills",
             None,
             "kimi-code-cli",
         ),
@@ -1008,7 +993,7 @@ pub fn builtin_agents() -> Vec<Agent> {
             None,
             "copilot",
         ),
-        agent("warp", "Warp", "coding", ".agents/skills", None, "warp"),
+        agent("warp", "Warp", "coding", ".warp/skills", None, "warp"),
         agent("aider", "Aider", "coding", ".aider/skills", None, "aider"),
         // ── Lobster platforms ────────────────────────────────────────────────
         agent(
@@ -1053,14 +1038,17 @@ pub fn builtin_agents() -> Vec<Agent> {
             "workbuddy",
         ),
         // ── Central Skills ────────────────────────────────────────────────────
-        agent(
-            "central",
-            "Central Skills",
-            "central",
-            ".agents/skills",
-            None,
-            "central",
-        ),
+        Agent {
+            id: "central".to_string(),
+            display_name: "Central Skills".to_string(),
+            category: "central".to_string(),
+            global_skills_dir: path_to_string(&app_data_dir().join("central")),
+            project_skills_dir: None,
+            icon_name: Some("central".to_string()),
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: true,
+        },
     ]
 }
 
@@ -1070,9 +1058,9 @@ pub fn builtin_agents() -> Vec<Agent> {
 ///
 /// Uses `ON CONFLICT DO UPDATE` to preserve `is_central = true` if a prior
 /// scan already marked the skill as central (e.g., when the central agent and
-/// codex both point to `~/.agents/skills/` and are scanned in different
-/// orders). Once a skill is flagged as central it must never be downgraded to
-/// non-central by a subsequent scan of the same directory by a non-central agent.
+/// another platform both scan the same shared directory). Once a skill is
+/// flagged as central it must never be downgraded to non-central by a
+/// subsequent scan of the same directory by a non-central agent.
 pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO skills

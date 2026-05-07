@@ -65,7 +65,7 @@ const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
     id: "central",
     display_name: "Central Skills",
     category: "central",
-    global_skills_dir: "/Users/browser/.agents/skills/",
+    global_skills_dir: "/Users/browser/.skillsmanage/central/",
     is_detected: true,
     is_builtin: true,
     is_enabled: true,
@@ -77,8 +77,8 @@ const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     id: "fixture-central-skill",
     name: "fixture-central-skill",
     description: "Browser validation fixture for Central and drawer entry flows.",
-    file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
-    canonical_path: "~/.agents/skills/fixture-central-skill",
+    file_path: "~/.skillsmanage/central/fixture-central-skill/SKILL.md",
+    canonical_path: "~/.skillsmanage/central/fixture-central-skill",
     is_central: true,
     source: "browser-fixture",
     scanned_at: "2026-04-17T00:00:00.000Z",
@@ -194,7 +194,7 @@ function FirstVisitEmptyState() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-xl px-4 py-3 max-w-xs text-left border border-border">
           <FolderOpen className="size-4 shrink-0 text-primary/60" />
           <span>
-            {t("empty.createHint")} <code className="font-mono">~/.agents/skills/my-skill/SKILL.md</code>
+            {t("empty.createHint")} <code className="font-mono">~/.skillsmanage/central/my-skill/SKILL.md</code>
           </span>
         </div>
         <Button

@@ -48,7 +48,7 @@ React 前端 (src/)  ──Tauri IPC──▶  Rust 后端 (src-tauri/src/)  ─
 ### 核心业务模型
 
 - **技能（Skill）**：包含 YAML 前缀的 Markdown 文件（SKILL.md），是核心管理单元
-- **中央目录**：`~/.agents/skills/` 是技能的唯一真实来源（canonical source）
+- **中央目录**：`~/.skillsmanage/central/` 是技能的唯一真实来源（canonical source）
 - **平台安装**：通过符号链接（symlink）将中央技能安装到各平台目录（如 `~/.claude/skills/`）
 - **自动中央化（Auto-centralize）**：安装仅存在于某平台的技能到其他平台时，`linker.rs` 的 `ensure_centralized` 会自动将其拷贝到中央目录并更新 DB 的 `canonical_path`/`is_central`，再走正常 symlink/copy 流程。调用方（包括 `install_skill_to_agent_impl` 和 `install_skill_to_agent_copy_impl`）对此透明
 - **集合（Collection）**：技能分组，支持批量安装和 JSON 导入/导出

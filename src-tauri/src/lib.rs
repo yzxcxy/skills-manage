@@ -20,7 +20,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let db_dir = path_utils::app_data_dir();
-            fs::create_dir_all(&db_dir).expect("Failed to create ~/.skillsmanage directory");
+            fs::create_dir_all(&db_dir).expect("Failed to create app data directory");
             let db_path = path_utils::path_to_string(&db_dir.join("db.sqlite"));
 
             // Create pool and initialize schema
@@ -73,6 +73,8 @@ pub fn run() {
             commands::collections::delete_collection,
             commands::collections::update_collection,
             commands::collections::batch_install_collection,
+            commands::collections::batch_uninstall_collection,
+            commands::collections::batch_delete_collection_skills,
             commands::collections::export_collection,
             commands::collections::import_collection,
             // Settings

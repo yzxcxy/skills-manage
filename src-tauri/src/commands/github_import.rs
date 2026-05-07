@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
+    commands::collections::{add_skill_to_collection_impl, create_collection_impl},
     db::{self, DbPool, Skill},
     AppState,
 };
@@ -85,6 +86,9 @@ pub struct GitHubRepoImportResult {
     pub repo: GitHubRepoRef,
     pub imported_skills: Vec<ImportedGitHubSkillSummary>,
     pub skipped_skills: Vec<String>,
+    /// The collection automatically created from this repo import, if any skills were imported.
+    pub collection_id: Option<String>,
+    pub collection_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -523,10 +527,36 @@ async fn import_github_repo_skills_impl(
         },
     );
 
+    // Auto-create a collection grouping all imported skills from this repo.
+    let (collection_id, collection_name) = if imported_skills.is_empty() {
+        (None, None)
+    } else {
+        let col_name = format!("{}/{}", repo.owner, repo.repo);
+        let col_description = Some(format!(
+            "Auto-created from GitHub import of {}/{}",
+            repo.owner, repo.repo
+        ));
+        match create_collection_impl(pool, &col_name, col_description.as_deref()).await {
+            Ok(collection) => {
+                let cid = collection.id.clone();
+                for skill in &imported_skills {
+                    let _ = add_skill_to_collection_impl(pool, &cid, &skill.imported_skill_id).await;
+                }
+                (Some(cid), Some(collection.name))
+            }
+            Err(e) => {
+                eprintln!("[github_import] Failed to auto-create collection: {}", e);
+                (None, None)
+            }
+        }
+    };
+
     Ok(GitHubRepoImportResult {
         repo,
         imported_skills,
         skipped_skills,
+        collection_id,
+        collection_name,
     })
 }
 

@@ -127,6 +127,11 @@ export interface BatchInstallResult {
   failed: Array<{ agent_id: string; error: string }>;
 }
 
+export interface BatchDeleteResult {
+  deletedSkillIds: string[];
+  failed: Array<{ skill_id: string; error: string }>;
+}
+
 export interface DeleteCentralSkillOptions {
   cascadeUninstall: boolean;
 }
@@ -358,6 +363,8 @@ export interface GitHubRepoImportResult {
   repo: GitHubRepoRef;
   importedSkills: ImportedGitHubSkillSummary[];
   skippedSkills: string[];
+  collectionId?: string | null;
+  collectionName?: string | null;
 }
 
 export type GitHubImportProgressPhase = "preparing" | "writing" | "finalizing";

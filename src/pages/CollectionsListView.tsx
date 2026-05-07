@@ -9,6 +9,8 @@ import {
   Trash2,
   Download,
   PackagePlus,
+  PackageMinus,
+  Bomb,
 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
@@ -62,6 +64,8 @@ export function CollectionsListView() {
   const removeSkillFromCollection = useCollectionStore((s) => s.removeSkillFromCollection);
   const deleteCollection = useCollectionStore((s) => s.deleteCollection);
   const batchInstallCollection = useCollectionStore((s) => s.batchInstallCollection);
+  const batchUninstallCollection = useCollectionStore((s) => s.batchUninstallCollection);
+  const batchDeleteCollectionSkills = useCollectionStore((s) => s.batchDeleteCollectionSkills);
   const exportCollection = useCollectionStore((s) => s.exportCollection);
   const addSkillToCollection = useCollectionStore((s) => s.addSkillToCollection);
 
@@ -122,6 +126,7 @@ export function CollectionsListView() {
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [isInstallOpen, setIsInstallOpen] = useState(false);
+  const [isUninstallOpen, setIsUninstallOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [installTargetSkill, setInstallTargetSkill] = useState<SkillWithLinks | null>(null);
   const [isSingleInstallOpen, setIsSingleInstallOpen] = useState(false);
@@ -317,6 +322,48 @@ export function CollectionsListView() {
     }
   }
 
+  async function handleBatchUninstall(agentIds: string[]) {
+    if (!selectedId) {
+      return { succeeded: [], failed: [] };
+    }
+    try {
+      const result = await batchUninstallCollection(selectedId, agentIds);
+      await refreshCounts();
+      if (result.failed.length > 0) {
+        const failedNames = result.failed.map((f) => f.agent_id).join(", ");
+        toast.error(t("collection.uninstallPartialFail", { platforms: failedNames }));
+      } else {
+        toast.success(t("collection.uninstallSuccess"));
+      }
+      return result;
+    } catch (err) {
+      toast.error(t("collection.uninstallError", { error: String(err) }));
+      return { succeeded: [], failed: [{ agent_id: "batch", error: String(err) }] };
+    }
+  }
+
+  async function handleBatchDeleteSkills() {
+    if (!selectedId || !currentDetail) return;
+    if (!window.confirm(t("collection.deleteSkillsConfirm", { name: currentDetail.name, count: currentDetail.skills.length }))) return;
+    setIsDeleting(true);
+    try {
+      const result = await batchDeleteCollectionSkills(selectedId);
+      await refreshCounts();
+      await loadCollections();
+      setSelectedId(null);
+      if (result.failed.length > 0) {
+        const failedNames = result.failed.map((f) => f.skill_id).join(", ");
+        toast.error(t("collection.deleteSkillsPartialFail", { skills: failedNames }));
+      } else {
+        toast.success(t("collection.deleteSkillsSuccess", { count: result.deletedSkillIds.length }));
+      }
+    } catch (err) {
+      toast.error(t("collection.deleteSkillsError", { error: String(err) }));
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -430,6 +477,25 @@ export function CollectionsListView() {
                       <PackagePlus className="size-3.5" />
                       <span>{t("collection.batchInstall")}</span>
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsUninstallOpen(true)}
+                      disabled={currentDetail.skills.length === 0}
+                    >
+                      <PackageMinus className="size-3.5" />
+                      <span>{t("collection.batchUninstall")}</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleBatchDeleteSkills}
+                      disabled={currentDetail.skills.length === 0 || isDeleting}
+                      className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+                    >
+                      {isDeleting ? <Loader2 className="size-3.5 animate-spin" /> : <Bomb className="size-3.5" />}
+                      <span>{t("collection.batchDeleteSkills")}</span>
+                    </Button>
                     <Button variant="default" size="sm" onClick={() => setIsPickerOpen(true)}>
                       <Plus className="size-3.5" />
                       <span>{t("collection.addSkill")}</span>
@@ -503,6 +569,15 @@ export function CollectionsListView() {
             skillCount={currentDetail.skills.length}
             agents={agents}
             onInstall={(agentIds) => batchInstallCollection(currentDetail.id, agentIds)}
+          />
+          <CollectionInstallDialog
+            open={isUninstallOpen}
+            onOpenChange={setIsUninstallOpen}
+            collectionName={currentDetail.name}
+            skillCount={currentDetail.skills.length}
+            agents={agents}
+            onInstall={(agentIds) => handleBatchUninstall(agentIds)}
+            mode="uninstall"
           />
         </>
       )}

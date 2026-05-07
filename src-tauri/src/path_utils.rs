@@ -39,11 +39,16 @@ pub fn resolve_home_dir() -> PathBuf {
 }
 
 pub fn app_data_dir() -> PathBuf {
-    resolve_home_dir().join(".skillsmanage")
+    let dir_name = if cfg!(debug_assertions) {
+        ".skillsmanage-dev"
+    } else {
+        ".skillsmanage"
+    };
+    resolve_home_dir().join(dir_name)
 }
 
 pub fn central_skills_dir() -> PathBuf {
-    resolve_home_dir().join(".agents").join("skills")
+    app_data_dir().join("central")
 }
 
 fn expand_home_path_with_home(path: &str, home_dir: &Path) -> PathBuf {

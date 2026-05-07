@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import { Collection, CollectionDetail, CollectionBatchInstallResult } from "@/types";
+import { Collection, CollectionDetail, CollectionBatchInstallResult, BatchDeleteResult } from "@/types";
 
 const BROWSER_FIXTURE_COLLECTIONS: Collection[] = [
   {
@@ -50,6 +50,8 @@ interface CollectionState {
   addSkillToCollection: (collectionId: string, skillId: string) => Promise<void>;
   removeSkillFromCollection: (collectionId: string, skillId: string) => Promise<void>;
   batchInstallCollection: (collectionId: string, agentIds: string[]) => Promise<CollectionBatchInstallResult>;
+  batchUninstallCollection: (collectionId: string, agentIds: string[]) => Promise<CollectionBatchInstallResult>;
+  batchDeleteCollectionSkills: (collectionId: string) => Promise<BatchDeleteResult>;
   exportCollection: (collectionId: string) => Promise<string>;
   importCollection: (json: string) => Promise<Collection>;
   refreshCounts: () => Promise<void>;
@@ -213,6 +215,39 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       const result = await invoke<CollectionBatchInstallResult>("batch_install_collection", {
         collectionId,
         agentIds,
+      });
+      return result;
+    } catch (err) {
+      set({ error: String(err) });
+      throw err;
+    }
+  },
+
+  /**
+   * Batch uninstall all skills in a collection from the given agents.
+   */
+  batchUninstallCollection: async (collectionId: string, agentIds: string[]) => {
+    set({ error: null });
+    try {
+      const result = await invoke<CollectionBatchInstallResult>("batch_uninstall_collection", {
+        collectionId,
+        agentIds,
+      });
+      return result;
+    } catch (err) {
+      set({ error: String(err) });
+      throw err;
+    }
+  },
+
+  /**
+   * Batch delete all skills in a collection from central and DB.
+   */
+  batchDeleteCollectionSkills: async (collectionId: string) => {
+    set({ error: null });
+    try {
+      const result = await invoke<BatchDeleteResult>("batch_delete_collection_skills", {
+        collectionId,
       });
       return result;
     } catch (err) {

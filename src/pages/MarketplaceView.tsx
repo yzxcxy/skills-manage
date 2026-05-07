@@ -261,9 +261,20 @@ export function MarketplaceView() {
 
       // Write via the Tauri FS plugin
       const { writeTextFile, mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      const skillDir = `.agents/skills/${skill.name}`;
-      await mkdir(skillDir, { baseDir: BaseDirectory.Home, recursive: true });
-      await writeTextFile(`${skillDir}/SKILL.md`, content, { baseDir: BaseDirectory.Home });
+      const centralAgent = centralAgents.find((a) => a.id === "central");
+      const centralDir = centralAgent?.global_skills_dir ?? "~/.skillsmanage/central";
+      const skillDir = `${centralDir}/${skill.name}`;
+      // global_skills_dir is relative to home; guard against absolute paths to avoid
+      // double-resolution when BaseDirectory.Home is used.
+      const isAbsolutePath =
+        centralDir.startsWith("/") || /^[A-Za-z]:[/\\]/.test(centralDir);
+      if (isAbsolutePath) {
+        await mkdir(skillDir, { recursive: true });
+        await writeTextFile(`${skillDir}/SKILL.md`, content);
+      } else {
+        await mkdir(skillDir, { baseDir: BaseDirectory.Home, recursive: true });
+        await writeTextFile(`${skillDir}/SKILL.md`, content, { baseDir: BaseDirectory.Home });
+      }
 
       await rescan();
       toast.success(t("marketplace.installSuccess"));

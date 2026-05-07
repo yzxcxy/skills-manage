@@ -122,6 +122,8 @@ function buildCollectionStoreState(overrides = {}) {
     addSkillToCollection: vi.fn(),
     removeSkillFromCollection: mockRemoveSkillFromCollection,
     batchInstallCollection: vi.fn(),
+    batchUninstallCollection: vi.fn(),
+    batchDeleteCollectionSkills: vi.fn(),
     exportCollection: mockExportCollection,
     importCollection: vi.fn(),
     refreshCounts: vi.fn(),

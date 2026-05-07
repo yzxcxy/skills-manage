@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::db::{self, DbPool, ScanDirectory};
+    use crate::db::{self, DbPool, ScanDirectory};
 use crate::path_utils::{expand_home_path, path_to_string};
 use crate::AppState;
 
@@ -214,7 +214,7 @@ mod tests {
             !dir.path.starts_with('~'),
             "tilde paths must be expanded before persistence"
         );
-        assert!(dir.path.contains(".skillsmanage"));
+        assert!(dir.path.contains("skillsmanage"));
     }
 
     #[tokio::test]

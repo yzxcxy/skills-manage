@@ -23,7 +23,7 @@ import { PlatformDialog } from "@/components/settings/PlatformDialog";
 import { Input } from "@/components/ui/input";
 import { AgentWithStatus, ScanDirectory } from "@/types";
 import { AI_PROVIDERS, REGION_LABELS, RegionId } from "@/data/aiProviders";
-import { deriveHomeDir, formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
+import { formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
 
 // ─── App constants ────────────────────────────────────────────────────────────
 
@@ -193,21 +193,14 @@ export function SettingsView() {
 
   // Custom agents are those that are not built-in.
   const customAgents = agents.filter((a) => !a.is_builtin);
-  const homeDir = useMemo(() => {
-    const candidates = [
-      agents.find((agent) => agent.id === "central")?.global_skills_dir,
-      ...scanDirectories.map((dir) => dir.path),
-      ...agents.map((agent) => agent.global_skills_dir),
-    ].filter((candidate): candidate is string => Boolean(candidate));
-
-    return candidates
-      .map((candidate) => deriveHomeDir(candidate))
-      .find((candidate): candidate is string => Boolean(candidate));
-  }, [agents, scanDirectories]);
-  const dbPathDisplay = useMemo(
-    () => (homeDir ? joinPathForDisplay(homeDir, ".skillsmanage/db.sqlite") : DB_PATH_FALLBACK),
-    [homeDir]
-  );
+  const dbPathDisplay = useMemo(() => {
+    const centralDir = agents.find((a) => a.id === "central")?.global_skills_dir;
+    if (!centralDir) return DB_PATH_FALLBACK;
+    // Derive db path from central skills dir: e.g. ~/.skillsmanage[-dev]/central → ~/.skillsmanage[-dev]/db.sqlite
+    const parent = centralDir.replace(/[/\\]central[/\\]?$/, "");
+    if (!parent) return DB_PATH_FALLBACK;
+    return joinPathForDisplay(parent, "db.sqlite");
+  }, [agents]);
 
   // ── Local State ────────────────────────────────────────────────────────────
 

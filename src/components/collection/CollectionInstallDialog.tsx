@@ -26,6 +26,7 @@ interface CollectionInstallDialogProps {
   skillCount: number;
   agents: AgentWithStatus[];
   onInstall: (agentIds: string[]) => Promise<CollectionBatchInstallResult>;
+  mode?: "install" | "uninstall";
 }
 
 // ─── CollectionInstallDialog ──────────────────────────────────────────────────
@@ -37,6 +38,7 @@ export function CollectionInstallDialog({
   skillCount,
   agents,
   onInstall,
+  mode = "install",
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
   const targetAgents = agents.filter(isInstallTargetAgent);
@@ -96,20 +98,20 @@ export function CollectionInstallDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{t("batchInstall.title", { name: collectionName })}</DialogTitle>
+          <DialogTitle>{t(mode === "uninstall" ? "batchUninstall.title" : "batchInstall.title", { name: collectionName })}</DialogTitle>
           <DialogClose />
         </DialogHeader>
 
         <DialogBody className="space-y-5">
           <DialogDescription>
-            {t("batchInstall.desc", { count: skillCount })}
+            {t(mode === "uninstall" ? "batchUninstall.desc" : "batchInstall.desc", { count: skillCount })}
           </DialogDescription>
 
           {/* Platform checkboxes */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2" role="group" aria-label={t("batchInstall.selectPlatforms")}>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2" role="group" aria-label={t(mode === "uninstall" ? "batchUninstall.selectPlatforms" : "batchInstall.selectPlatforms")}>
             {targetAgents.length === 0 ? (
               <p className="col-span-2 text-sm text-muted-foreground">
-                {t("batchInstall.noPlatforms")}
+                {t(mode === "uninstall" ? "batchUninstall.noPlatforms" : "batchInstall.noPlatforms")}
               </p>
             ) : (
               targetAgents.map((agent) => {
@@ -131,7 +133,7 @@ export function CollectionInstallDialog({
                     </span>
                     {!agent.is_detected && (
                       <span className="text-xs text-muted-foreground shrink-0">
-                        {t("batchInstall.notDetected")}
+                        {t(mode === "uninstall" ? "batchUninstall.notDetected" : "batchInstall.notDetected")}
                       </span>
                     )}
                   </div>
@@ -144,7 +146,7 @@ export function CollectionInstallDialog({
           {result && result.failed.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
-                {t("batchInstall.succeeded", {
+                {t(mode === "uninstall" ? "batchUninstall.succeeded" : "batchInstall.succeeded", {
                   succeeded: result.succeeded.length,
                   failed: result.failed.length,
                 })}
@@ -162,7 +164,7 @@ export function CollectionInstallDialog({
                 onClick={() => onOpenChange(false)}
                 className="mt-2"
               >
-                {t("batchInstall.close")}
+                {t(mode === "uninstall" ? "batchUninstall.close" : "batchInstall.close")}
               </Button>
             </div>
           )}
@@ -181,7 +183,7 @@ export function CollectionInstallDialog({
               onClick={() => onOpenChange(false)}
               disabled={isLoading}
             >
-              {t("batchInstall.cancel")}
+              {t(mode === "uninstall" ? "batchUninstall.cancel" : "batchInstall.cancel")}
             </Button>
             <Button
               onClick={handleInstall}
@@ -190,10 +192,10 @@ export function CollectionInstallDialog({
               {isLoading ? (
                 <>
                   <Loader2 className="size-3.5 animate-spin" />
-                  {t("batchInstall.installing")}
+                  {t(mode === "uninstall" ? "batchUninstall.working" : "batchInstall.installing")}
                 </>
               ) : (
-                t("batchInstall.install", { count: selectedAgentIds.size })
+                t(mode === "uninstall" ? "batchUninstall.action" : "batchInstall.install", { count: selectedAgentIds.size })
               )}
             </Button>
           </DialogFooter>

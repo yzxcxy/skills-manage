@@ -672,18 +672,18 @@ mod tests {
     async fn test_install_to_universal_agent_returns_central_availability_without_link() {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join(".agents/skills");
-        let cursor_dir = tmp.path().join(".cursor/skills");
+        let codex_dir = tmp.path().join(".codex/skills");
         fs::create_dir_all(&central_dir).unwrap();
 
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
-            .bind(cursor_dir.to_string_lossy().to_string())
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
+            .bind(codex_dir.to_string_lossy().to_string())
             .execute(&pool)
             .await
             .unwrap();
         create_central_skill(&central_dir, "universal-skill");
 
-        let result = install_skill_to_agent_impl(&pool, "universal-skill", "cursor")
+        let result = install_skill_to_agent_impl(&pool, "universal-skill", "codex")
             .await
             .unwrap();
 
@@ -695,7 +695,7 @@ mod tests {
                 .into_owned()
         );
         assert!(
-            !cursor_dir.join("universal-skill").exists(),
+            !codex_dir.join("universal-skill").exists(),
             "universal agents must not receive redundant links for central skills"
         );
         assert!(
@@ -703,7 +703,7 @@ mod tests {
                 .await
                 .unwrap()
                 .into_iter()
-                .all(|installation| installation.agent_id != "cursor"),
+                .all(|installation| installation.agent_id != "codex"),
             "universal availability must not create removable installation rows"
         );
     }

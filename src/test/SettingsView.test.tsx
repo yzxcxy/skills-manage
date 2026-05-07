@@ -71,6 +71,16 @@ const mockBuiltinAgent: AgentWithStatus = {
   is_enabled: true,
 };
 
+const mockCentralAgent: AgentWithStatus = {
+  id: "central",
+  display_name: "Central Skills",
+  category: "central",
+  global_skills_dir: "/Users/test/.skillsmanage/central/",
+  is_detected: false,
+  is_builtin: true,
+  is_enabled: true,
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function setupMocks({
@@ -466,7 +476,7 @@ describe("SettingsView", () => {
   });
 
   it("shows the database path in the about section", () => {
-    setupMocks({ scanDirs: [mockBuiltinDir], agents: [mockBuiltinAgent] });
+    setupMocks({ scanDirs: [mockBuiltinDir], agents: [mockBuiltinAgent, mockCentralAgent] });
     renderSettingsView();
     expect(screen.getByText("/Users/test/.skillsmanage/db.sqlite")).toBeTruthy();
   });
