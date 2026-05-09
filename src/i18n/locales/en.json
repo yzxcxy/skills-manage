@@ -401,7 +401,12 @@
     },
     "language": "Language",
     "chinese": "中文",
-    "english": "English"
+    "english": "English",
+    "checkUpdate": "Check for Updates",
+    "checkingUpdate": "Checking...",
+    "updateAvailable": "New version {{version}} available",
+    "downloadUpdate": "Download Update",
+    "alreadyLatest": "You are on the latest version"
   },
   "addDir": {
     "title": "Add Project Directory",

@@ -168,7 +168,10 @@ function renderSettingsView() {
 describe("SettingsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(invoke).mockResolvedValue(null);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "get_app_version") return Promise.resolve("0.10.0");
+      return Promise.resolve(null);
+    });
   });
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -469,10 +472,12 @@ describe("SettingsView", () => {
 
   // ── About section ─────────────────────────────────────────────────────────
 
-  it("shows the app version in the about section", () => {
+  it("shows the app version in the about section", async () => {
     setupMocks();
     renderSettingsView();
-    expect(screen.getByText("skills-manage v0.9.1")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("skills-manage v0.10.0")).toBeTruthy();
+    });
   });
 
   it("shows the database path in the about section", () => {

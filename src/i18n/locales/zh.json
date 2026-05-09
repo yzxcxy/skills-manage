@@ -401,7 +401,12 @@
     },
     "language": "语言",
     "chinese": "中文",
-    "english": "English"
+    "english": "English",
+    "checkUpdate": "检查更新",
+    "checkingUpdate": "检查中...",
+    "updateAvailable": "发现新版本 {{version}}",
+    "downloadUpdate": "下载更新",
+    "alreadyLatest": "当前已是最新版本"
   },
   "addDir": {
     "title": "添加项目目录",

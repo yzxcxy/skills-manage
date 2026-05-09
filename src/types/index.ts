@@ -378,3 +378,14 @@ export interface GitHubImportProgressPayload {
   completedBytes: number;
   totalBytes: number;
 }
+
+// ─── Updater Types ────────────────────────────────────────────────────────────
+
+export interface UpdateCheckResult {
+  hasUpdate: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+  releaseNotes: string;
+  publishedAt?: string | null;
+}

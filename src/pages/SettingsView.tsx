@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Download, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
@@ -21,13 +22,12 @@ import { usePlatformStore } from "@/stores/platformStore";
 import { AddDirectoryDialog } from "@/components/settings/AddDirectoryDialog";
 import { PlatformDialog } from "@/components/settings/PlatformDialog";
 import { Input } from "@/components/ui/input";
-import { AgentWithStatus, ScanDirectory } from "@/types";
+import { AgentWithStatus, ScanDirectory, UpdateCheckResult } from "@/types";
 import { AI_PROVIDERS, REGION_LABELS, RegionId } from "@/data/aiProviders";
 import { formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
 
 // ─── App constants ────────────────────────────────────────────────────────────
 
-const APP_VERSION = "0.9.1";
 const DB_PATH_FALLBACK = "~/.skillsmanage/db.sqlite";
 
 /** Catppuccin Lavender hex per flavor — used for visual preview dots on flavor buttons (default accent). */
@@ -282,11 +282,23 @@ export function SettingsView() {
   const [githubPatInput, setGitHubPatInput] = useState("");
   const [githubPatMessage, setGitHubPatMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Updater state
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [updateCheck, setUpdateCheck] = useState<{
+    loading: boolean;
+    result?: UpdateCheckResult;
+    error?: string;
+  } | null>(null);
+
   // ── Load on mount ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     loadScanDirectories();
     loadGitHubPat();
+    // Fetch the real app version from the backend
+    invoke<string>("get_app_version")
+      .then(setAppVersion)
+      .catch(() => setAppVersion(""));
   }, [loadScanDirectories, loadGitHubPat]);
 
   useEffect(() => {
@@ -438,6 +450,31 @@ export function SettingsView() {
       const text = String(err);
       setGitHubPatMessage({ type: "error", text });
       toast.error(text);
+    }
+  }
+
+  async function handleCheckUpdate() {
+    setUpdateCheck({ loading: true });
+    try {
+      const result = await invoke<UpdateCheckResult>("check_update");
+      setUpdateCheck({ loading: false, result });
+      if (result.hasUpdate) {
+        toast.success(t("settings.updateAvailable", { version: result.latestVersion }));
+      } else {
+        toast.success(t("settings.latestVersion"));
+      }
+    } catch (err) {
+      const text = String(err);
+      setUpdateCheck({ loading: false, error: text });
+      toast.error(text);
+    }
+  }
+
+  async function handleOpenReleaseUrl(url: string) {
+    try {
+      await open(url);
+    } catch {
+      window.open(url, "_blank");
     }
   }
 
@@ -759,11 +796,50 @@ export function SettingsView() {
             <div className="space-y-3">
               <div className="flex items-center gap-3">
                 <Info className="size-4 text-muted-foreground shrink-0" />
-                <div>
+                <div className="flex-1">
                   <div className="text-xs text-muted-foreground">{t("settings.appVersion")}</div>
-                  <div className="text-sm font-medium">skills-manage v{APP_VERSION}</div>
+                  <div className="text-sm font-medium">skills-manage v{appVersion || "…"}</div>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckUpdate}
+                  disabled={updateCheck?.loading}
+                >
+                  {updateCheck?.loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                  <span>{t("settings.checkUpdate")}</span>
+                </Button>
               </div>
+              {updateCheck?.result?.hasUpdate && (
+                <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm">
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                        {t("settings.updateAvailable", { version: updateCheck.result.latestVersion })}
+                      </span>
+                      {updateCheck.result.publishedAt && (
+                        <span className="text-xs text-muted-foreground ml-2">
+                          {new Date(updateCheck.result.publishedAt).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    <Button size="sm" onClick={() => handleOpenReleaseUrl(updateCheck.result!.releaseUrl)}>
+                      <Download className="size-3.5" />
+                      <span>{t("settings.downloadUpdate")}</span>
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {updateCheck?.result && !updateCheck.result.hasUpdate && (
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.alreadyLatest")}
+                </p>
+              )}
+              {updateCheck?.error && (
+                <p className="text-sm text-destructive" role="alert">
+                  {updateCheck.error}
+                </p>
+              )}
               <div className="flex items-center gap-3">
                 <Database className="size-4 text-muted-foreground shrink-0" />
                 <div>

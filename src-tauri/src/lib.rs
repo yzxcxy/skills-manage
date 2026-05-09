@@ -111,6 +111,9 @@ pub fn run() {
             commands::marketplace::get_skill_explanation,
             commands::marketplace::explain_skill_stream,
             commands::marketplace::refresh_skill_explanation,
+            // Updater
+            commands::updater::check_update,
+            commands::updater::get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

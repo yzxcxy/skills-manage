@@ -4,6 +4,7 @@ import { PlatformView } from "@/pages/PlatformView";
 import { CentralSkillsView } from "@/pages/CentralSkillsView";
 import { SkillDetailPage } from "@/pages/SkillDetailPage";
 import { CollectionsListView } from "@/pages/CollectionsListView";
+import { CollectionDetailView } from "@/pages/CollectionDetailView";
 import { MarketplaceView } from "@/pages/MarketplaceView";
 import { SettingsView } from "@/pages/SettingsView";
 import { DiscoverView } from "@/pages/DiscoverView";
@@ -23,6 +24,7 @@ function App() {
         <Route path="skill/:skillId" element={<SkillDetailPage />} />
         {/* Collections */}
         <Route path="collections" element={<CollectionsListView />} />
+        <Route path="collection/:collectionId" element={<CollectionDetailView />} />
         {/* Marketplace */}
         <Route path="marketplace" element={<MarketplaceView />} />
         {/* Discover project skills */}
