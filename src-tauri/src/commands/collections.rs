@@ -104,8 +104,16 @@ pub async fn remove_skill_from_collection_impl(
     db::remove_skill_from_collection(pool, collection_id, skill_id).await
 }
 
-/// Delete a collection and all its skill memberships.
-pub async fn delete_collection_impl(pool: &DbPool, collection_id: &str) -> Result<(), String> {
+/// Delete a collection.
+///
+/// When `delete_skills` is `true`, all skills owned by this collection are
+/// removed from disk and database. When `false`, skills are moved to the
+/// default collection before the collection itself is deleted.
+pub async fn delete_collection_impl(
+    pool: &DbPool,
+    collection_id: &str,
+    delete_skills: bool,
+) -> Result<(), String> {
     // Verify the collection exists before trying to delete it.
     let collection = db::get_collection_by_id(pool, collection_id)
         .await?
@@ -113,6 +121,13 @@ pub async fn delete_collection_impl(pool: &DbPool, collection_id: &str) -> Resul
 
     if collection.is_default {
         return Err("默认集合不可删除".to_string());
+    }
+
+    if delete_skills {
+        batch_delete_collection_skills_impl(pool, collection_id).await?;
+    } else {
+        let default = db::ensure_default_collection(pool).await?;
+        db::update_skills_collection(pool, collection_id, &default.id).await?;
     }
 
     db::delete_collection(pool, collection_id).await
@@ -224,7 +239,8 @@ pub struct BatchDeleteResult {
 
 /// Delete all skills in a collection from the central directory and database.
 ///
-/// Also removes the collection itself after deleting all skills.
+/// The collection itself is **not** deleted here — callers must delete it
+/// separately if desired.
 /// Each skill is attempted independently; failures are collected rather than
 /// aborting the whole batch.
 pub async fn batch_delete_collection_skills_impl(
@@ -269,7 +285,7 @@ pub async fn batch_delete_collection_skills_impl(
                 true
             }
         } else {
-            let fallback = central_dir.join(&skill.id);
+            let fallback = central_dir.join(collection_id).join(&skill.id);
             if fallback.exists() {
                 std::fs::remove_dir_all(&fallback)
                     .map_err(|e| format!("Failed to remove directory: {}", e))
@@ -297,16 +313,6 @@ pub async fn batch_delete_collection_skills_impl(
         }
 
         deleted_skill_ids.push(skill.id.clone());
-    }
-
-    // Only delete the collection itself if every skill was successfully removed.
-    if failed.is_empty() {
-        if let Err(e) = db::delete_collection(pool, collection_id).await {
-            eprintln!(
-                "[batch_delete_collection_skills] Failed to delete collection '{}': {}",
-                collection_id, e
-            );
-        }
     }
 
     Ok(BatchDeleteResult {
@@ -418,8 +424,9 @@ pub async fn remove_skill_from_collection(
 pub async fn delete_collection(
     state: State<'_, AppState>,
     collection_id: String,
+    delete_skills: bool,
 ) -> Result<(), String> {
-    delete_collection_impl(&state.db, &collection_id).await
+    delete_collection_impl(&state.db, &collection_id, delete_skills).await
 }
 
 /// Tauri command: update a collection's name and description.
@@ -499,10 +506,11 @@ mod tests {
         pool
     }
 
-    fn make_skill(id: &str) -> Skill {
+    fn make_skill(id: &str, collection_id: &str) -> Skill {
         Skill {
             id: id.to_string(),
             name: format!("Skill {}", id),
+            collection_id: collection_id.to_string(),
             description: Some(format!("Description for {}", id)),
             file_path: format!("/tmp/central/{}/SKILL.md", id),
             canonical_path: Some(format!("/tmp/central/{}", id)),
@@ -579,8 +587,8 @@ mod tests {
     async fn test_get_collection_detail_includes_skills() {
         let pool = setup_test_db().await;
 
-        let skill_a = make_skill("skill-a");
-        let skill_b = make_skill("skill-b");
+        let skill_a = make_skill("skill-a", "test-collection-id");
+        let skill_b = make_skill("skill-b", "test-collection-id");
         db::upsert_skill(&pool, &skill_a).await.unwrap();
         db::upsert_skill(&pool, &skill_b).await.unwrap();
 
@@ -626,7 +634,7 @@ mod tests {
     async fn test_add_skill_to_collection_success() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("add-skill");
+        let skill = make_skill("add-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let col = create_collection_impl(&pool, "Add Test", None)
@@ -645,7 +653,7 @@ mod tests {
     async fn test_add_skill_to_collection_is_idempotent() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("idem-skill");
+        let skill = make_skill("idem-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let col = create_collection_impl(&pool, "Idem Col", None)
@@ -679,7 +687,7 @@ mod tests {
     async fn test_remove_skill_from_collection_success() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("remove-skill");
+        let skill = make_skill("remove-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let col = create_collection_impl(&pool, "Remove Test", None)
@@ -713,17 +721,18 @@ mod tests {
             .await
             .unwrap();
 
-        delete_collection_impl(&pool, &col.id).await.unwrap();
+        delete_collection_impl(&pool, &col.id, false).await.unwrap();
 
         let all = get_collections_impl(&pool).await.unwrap();
-        assert!(all.is_empty(), "collection should be gone");
+        let ids: Vec<String> = all.iter().map(|c| c.get("id").unwrap().as_str().unwrap().to_string()).collect();
+        assert!(!ids.contains(&col.id), "collection should be gone");
     }
 
     #[tokio::test]
     async fn test_delete_collection_also_removes_skills_memberships() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("cascade-skill");
+        let skill = make_skill("cascade-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let col = create_collection_impl(&pool, "Cascade Col", None)
@@ -733,25 +742,21 @@ mod tests {
             .await
             .unwrap();
 
-        delete_collection_impl(&pool, &col.id).await.unwrap();
+        delete_collection_impl(&pool, &col.id, false).await.unwrap();
 
-        // The collection_skills rows should also be gone.
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM collection_skills WHERE collection_id = ?")
-                .bind(&col.id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        // Skill should have been moved to the default collection.
+        let skill = db::get_skill_by_id(&pool, "cascade-skill").await.unwrap().unwrap();
+        let default = db::ensure_default_collection(&pool).await.unwrap();
         assert_eq!(
-            count, 0,
-            "collection_skills should be removed on cascade delete"
+            skill.collection_id, default.id,
+            "skill should be moved to default collection after collection deletion"
         );
     }
 
     #[tokio::test]
     async fn test_delete_nonexistent_collection_fails() {
         let pool = setup_test_db().await;
-        let result = delete_collection_impl(&pool, "no-such-id").await;
+        let result = delete_collection_impl(&pool, "no-such-id", false).await;
         assert!(result.is_err());
     }
 
@@ -759,7 +764,7 @@ mod tests {
     async fn test_delete_collection_does_not_delete_skills() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("safe-skill");
+        let skill = make_skill("safe-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let col = create_collection_impl(&pool, "Safe Delete", None)
@@ -769,7 +774,7 @@ mod tests {
             .await
             .unwrap();
 
-        delete_collection_impl(&pool, &col.id).await.unwrap();
+        delete_collection_impl(&pool, &col.id, false).await.unwrap();
 
         // The skill itself should still exist.
         let found = db::get_skill_by_id(&pool, "safe-skill").await.unwrap();
@@ -816,8 +821,8 @@ mod tests {
     async fn test_export_collection_produces_valid_json() {
         let pool = setup_test_db().await;
 
-        let skill_a = make_skill("export-skill-a");
-        let skill_b = make_skill("export-skill-b");
+        let skill_a = make_skill("export-skill-a", "test-collection-id");
+        let skill_b = make_skill("export-skill-b", "test-collection-id");
         db::upsert_skill(&pool, &skill_a).await.unwrap();
         db::upsert_skill(&pool, &skill_b).await.unwrap();
 
@@ -887,7 +892,7 @@ mod tests {
     async fn test_import_collection_creates_collection() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("import-skill");
+        let skill = make_skill("import-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         let json = serde_json::to_string(&CollectionExport {
@@ -914,7 +919,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Only insert skill-a, not skill-b.
-        let skill_a = make_skill("known-skill");
+        let skill_a = make_skill("known-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill_a).await.unwrap();
 
         let json = serde_json::to_string(&CollectionExport {
@@ -967,7 +972,7 @@ mod tests {
     async fn test_import_then_export_roundtrip() {
         let pool = setup_test_db().await;
 
-        let skill = make_skill("roundtrip-skill");
+        let skill = make_skill("roundtrip-skill", "test-collection-id");
         db::upsert_skill(&pool, &skill).await.unwrap();
 
         // Export from original collection.
@@ -1025,9 +1030,11 @@ mod tests {
             .unwrap();
 
             // Insert the skill into DB.
+            let default_col = db::ensure_default_collection(&pool).await.unwrap();
             let skill = Skill {
                 id: skill_id.to_string(),
                 name: skill_id.to_string(),
+                collection_id: default_col.id.clone(),
                 description: None,
                 file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
                 canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
@@ -1097,10 +1104,12 @@ mod tests {
         )
         .unwrap();
 
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
         for skill_id in &["good-skill", "missing-on-disk"] {
             let skill = Skill {
                 id: skill_id.to_string(),
                 name: skill_id.to_string(),
+                collection_id: default_col.id.clone(),
                 description: None,
                 file_path: central_dir
                     .join(skill_id)

@@ -8,6 +8,18 @@ use super::github_import;
 use crate::path_utils::central_skills_dir;
 use crate::AppState;
 
+fn is_skill_installed_in_central(central_dir: &std::path::Path, skill_name: &str) -> bool {
+    if let Ok(entries) = std::fs::read_dir(central_dir) {
+        for entry in entries.flatten() {
+            let collection_path = entry.path();
+            if collection_path.is_dir() && collection_path.join(skill_name).join("SKILL.md").exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -355,7 +367,7 @@ async fn sync_registry_impl(
 
     // Upsert skills into marketplace_skills
     for skill in &skills {
-        let is_installed = central_dir.join(&skill.name).join("SKILL.md").exists();
+        let is_installed = is_skill_installed_in_central(&central_dir, &skill.name);
 
         sqlx::query(
             "INSERT INTO marketplace_skills (id, registry_id, name, description, download_url, is_installed, synced_at, cache_updated_at)
@@ -518,14 +530,31 @@ pub async fn install_marketplace_skill(
         .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
-    // Create directory and write SKILL.md
-    let skill_dir = central_skills_dir().join(&skill.name);
+    // Install into the default collection.
+    let default_col = crate::db::ensure_default_collection(&state.db).await?;
+    let skill_dir = central_skills_dir().join(&default_col.id).join(&skill.name);
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
     let skill_md_path = skill_dir.join("SKILL.md");
     std::fs::write(&skill_md_path, &content)
         .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+    // Record the skill in the skills table so it shows up in scans.
+    let now = chrono::Utc::now().to_rfc3339();
+    let db_skill = crate::db::Skill {
+        id: skill.name.clone(),
+        name: skill.name.clone(),
+        collection_id: default_col.id,
+        description: None,
+        file_path: skill_md_path.to_string_lossy().into_owned(),
+        canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+        is_central: true,
+        source: Some("marketplace".to_string()),
+        content: None,
+        scanned_at: now,
+    };
+    crate::db::upsert_skill(&state.db, &db_skill).await?;
 
     // Mark as installed in DB
     sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")

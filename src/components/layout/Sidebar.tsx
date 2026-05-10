@@ -3,8 +3,8 @@ import { useNavigate, useLocation } from "react-router-dom";
 import {
   Loader2,
   Blocks,
-  LayoutGrid,
   Radar,
+  Settings,
   Store,
   Eye,
   EyeOff,
@@ -200,20 +200,11 @@ export function Sidebar() {
         {/* Central Skills Warehouse */}
         <NavItem
           label={t("sidebar.centralSkills")}
-          isActive={pathname === "/central" || pathname.startsWith("/collection/")}
+          isActive={pathname === "/central" || pathname.startsWith("/collection/") || pathname.startsWith("/skill/")}
           onClick={() => navigate("/central")}
           icon={<Blocks className="size-4" />}
           expanded={expanded}
           count={collections.length}
-        />
-
-        {/* All Skills */}
-        <NavItem
-          label={t("sidebar.allSkills")}
-          isActive={pathname === "/skills" || pathname.startsWith("/skill/")}
-          onClick={() => navigate("/skills")}
-          icon={<LayoutGrid className="size-4" />}
-          expanded={expanded}
         />
 
         {/* Discover */}
@@ -357,6 +348,17 @@ export function Sidebar() {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Bottom: Settings */}
+      <div className="shrink-0 border-t border-sidebar-border/70 py-2 px-1.5">
+        <NavItem
+          label={t("sidebar.settings")}
+          isActive={pathname === "/settings"}
+          onClick={() => navigate("/settings")}
+          icon={<Settings className="size-4" />}
+          expanded={expanded}
+        />
       </div>
 
     </nav>

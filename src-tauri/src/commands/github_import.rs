@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
-    commands::collections::{add_skill_to_collection_impl, create_collection_impl},
+    commands::collections::create_collection_impl,
     db::{self, DbPool, Skill},
     AppState,
 };
@@ -446,11 +446,30 @@ async fn import_github_repo_skills_impl(
         },
     );
 
+    // Resolve target collection up-front so every skill knows its owner.
+    let target_collection = if let Some(cid) = collection_id.clone() {
+        db::get_collection_by_id(pool, &cid).await.ok().flatten()
+    } else {
+        let col_name = collection_name.clone().unwrap_or_else(|| format!("{}/{}", repo.owner, repo.repo));
+        let col_description = Some(format!(
+            "Auto-created from GitHub import of {}/{}",
+            repo.owner, repo.repo
+        ));
+        create_collection_impl(pool, &col_name, col_description.as_deref()).await.ok()
+    };
+    let target_collection = match target_collection {
+        Some(c) => c,
+        None => db::ensure_default_collection(pool).await?,
+    };
+    let target_collection_id_for_skill = target_collection.id.clone();
+
     let mut imported_skills = Vec::new();
     let mut created_paths = Vec::new();
 
+    let collection_dir = target_collection_id_for_skill.clone();
+
     for op in &staging_ops {
-        let target_dir = central_root.join(&op.final_skill_id);
+        let target_dir = central_root.join(&collection_dir).join(&op.final_skill_id);
         if target_dir.exists() {
             if op.resolution == DuplicateResolution::Overwrite {
                 std::fs::remove_dir_all(&target_dir).map_err(|e| {
@@ -498,6 +517,7 @@ async fn import_github_repo_skills_impl(
         let db_skill = Skill {
             id: op.final_skill_id.clone(),
             name: frontmatter.name.clone(),
+            collection_id: target_collection_id_for_skill.clone(),
             description: frontmatter.description.clone(),
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(target_dir.to_string_lossy().into_owned()),
@@ -531,40 +551,9 @@ async fn import_github_repo_skills_impl(
         },
     );
 
-    // Associate imported skills with a collection.
-    let (result_collection_id, result_collection_name) = if imported_skills.is_empty() {
-        (None, None)
-    } else if let Some(cid) = collection_id {
-        // Use existing collection.
-        if let Ok(Some(collection)) = db::get_collection_by_id(pool, &cid).await {
-            for skill in &imported_skills {
-                let _ = add_skill_to_collection_impl(pool, &cid, &skill.imported_skill_id).await;
-            }
-            (Some(cid), Some(collection.name))
-        } else {
-            eprintln!("[github_import] Specified collection '{}' not found", cid);
-            (None, None)
-        }
-    } else {
-        let col_name = collection_name.unwrap_or_else(|| format!("{}/{}", repo.owner, repo.repo));
-        let col_description = Some(format!(
-            "Auto-created from GitHub import of {}/{}",
-            repo.owner, repo.repo
-        ));
-        match create_collection_impl(pool, &col_name, col_description.as_deref()).await {
-            Ok(collection) => {
-                let cid = collection.id.clone();
-                for skill in &imported_skills {
-                    let _ = add_skill_to_collection_impl(pool, &cid, &skill.imported_skill_id).await;
-                }
-                (Some(cid), Some(collection.name))
-            }
-            Err(e) => {
-                eprintln!("[github_import] Failed to auto-create collection: {}", e);
-                (None, None)
-            }
-        }
-    };
+    // Collection already resolved before the loop; just surface the result.
+    let (result_collection_id, result_collection_name) =
+        (Some(target_collection.id.clone()), Some(target_collection.name.clone()));
 
     Ok(GitHubRepoImportResult {
         repo,
@@ -1700,11 +1689,13 @@ mod tests {
         )
         .expect("write skill");
 
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
         db::upsert_skill(
             &pool,
             &Skill {
                 id: "twitterapi-io".to_string(),
                 name: "twitterapi-io".to_string(),
+                collection_id: default_col.id,
                 description: Some("existing".to_string()),
                 file_path: existing_dir.join("SKILL.md").to_string_lossy().into_owned(),
                 canonical_path: Some(existing_dir.to_string_lossy().into_owned()),
@@ -1774,11 +1765,13 @@ mod tests {
             .find(|candidate| candidate.source_path == "skills/code-review")
             .expect("code review");
 
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
         db::upsert_skill(
             &pool,
             &Skill {
                 id: agent_planner.skill_id.clone(),
                 name: "Agent Planner".to_string(),
+                collection_id: default_col.id.clone(),
                 description: Some("existing".to_string()),
                 file_path: "/tmp/agent-planner/SKILL.md".to_string(),
                 canonical_path: Some("/tmp/agent-planner".to_string()),
@@ -1795,6 +1788,7 @@ mod tests {
             &Skill {
                 id: commit.skill_id.clone(),
                 name: "Commit".to_string(),
+                collection_id: default_col.id.clone(),
                 description: Some("existing".to_string()),
                 file_path: "/tmp/commit/SKILL.md".to_string(),
                 canonical_path: Some("/tmp/commit".to_string()),
@@ -1811,6 +1805,7 @@ mod tests {
             &Skill {
                 id: code_review.skill_id.clone(),
                 name: "Code Review".to_string(),
+                collection_id: default_col.id.clone(),
                 description: Some("existing".to_string()),
                 file_path: "/tmp/code-review/SKILL.md".to_string(),
                 canonical_path: Some("/tmp/code-review".to_string()),

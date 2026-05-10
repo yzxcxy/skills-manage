@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FileInput,
+  GitBranch,
   Layers,
   PackageMinus,
   PackagePlus,
@@ -14,11 +15,13 @@ import { useTranslation } from "react-i18next";
 
 import { useCollectionStore } from "@/stores/collectionStore";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useMarketplaceStore } from "@/stores/marketplaceStore";
 import { Collection, CollectionBatchInstallResult } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CollectionEditor } from "@/components/collection/CollectionEditor";
 import { CollectionInstallDialog } from "@/components/collection/CollectionInstallDialog";
+import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { cn } from "@/lib/utils";
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
@@ -139,6 +142,18 @@ export function CentralSkillsView() {
     mode: "install" | "uninstall";
   }>({ open: false, collection: null, mode: "install" });
 
+  // GitHub import
+  const githubImport = useMarketplaceStore((state) => state.githubImport);
+  const previewGitHubRepoImport = useMarketplaceStore(
+    (state) => state.previewGitHubRepoImport
+  );
+  const importGitHubRepoSkills = useMarketplaceStore(
+    (state) => state.importGitHubRepoSkills
+  );
+  const resetGitHubImport = useMarketplaceStore((state) => state.resetGitHubImport);
+  const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
+  const [githubRepoUrl, setGitHubRepoUrl] = useState("");
+
   useEffect(() => {
     loadCollections();
   }, [loadCollections]);
@@ -199,6 +214,35 @@ export function CentralSkillsView() {
     }
   }
 
+  async function handleGitHubPreview() {
+    try {
+      return await previewGitHubRepoImport(githubRepoUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleGitHubImport(
+    selections: Parameters<typeof importGitHubRepoSkills>[1],
+    collectionId?: string,
+    collectionName?: string,
+  ) {
+    try {
+      const result = await importGitHubRepoSkills(
+        githubRepoUrl,
+        selections,
+        collectionId,
+        collectionName,
+      );
+      await Promise.all([loadCollections(), refreshCounts()]);
+      toast.success(t("marketplace.githubImportCentralSuccess"));
+      return result;
+    } catch (err) {
+      toast.error(t("marketplace.installError", { error: String(err) }));
+      throw err;
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -217,6 +261,14 @@ export function CentralSkillsView() {
             </Button>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsGitHubImportOpen(true)}
+            >
+              <GitBranch className="size-3.5" />
+              <span>{t("marketplace.githubImportSecondaryCta")}</span>
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -299,6 +351,25 @@ export function CentralSkillsView() {
         agents={agents}
         onInstall={handleBatchAction}
         mode={installDialog.mode}
+      />
+
+      <GitHubRepoImportWizard
+        open={isGitHubImportOpen}
+        onOpenChange={setIsGitHubImportOpen}
+        repoUrl={githubRepoUrl}
+        onRepoUrlChange={setGitHubRepoUrl}
+        preview={githubImport.preview}
+        previewError={githubImport.error}
+        isPreviewLoading={githubImport.isPreviewLoading}
+        isImporting={githubImport.isImporting}
+        importResult={githubImport.importResult}
+        onPreview={handleGitHubPreview}
+        onImport={handleGitHubImport}
+        onReset={() => {
+          resetGitHubImport();
+          setGitHubRepoUrl("");
+        }}
+        launcherLabel={t("central.title")}
       />
 
       <input

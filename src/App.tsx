@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { PlatformView } from "@/pages/PlatformView";
 import { CentralSkillsView } from "@/pages/CentralSkillsView";
-import { AllSkillsView } from "@/pages/AllSkillsView";
 import { SkillDetailPage } from "@/pages/SkillDetailPage";
 import { CollectionDetailView } from "@/pages/CollectionDetailView";
 import { MarketplaceView } from "@/pages/MarketplaceView";
@@ -20,7 +19,6 @@ function App() {
         <Route path="platform/:agentId" element={<PlatformView />} />
         {/* Central Skills: collection-based management */}
         <Route path="central" element={<CentralSkillsView />} />
-        <Route path="skills" element={<AllSkillsView />} />
         {/* Skill detail page */}
         <Route path="skill/:skillId" element={<SkillDetailPage />} />
         {/* Collection detail */}

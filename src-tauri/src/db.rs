@@ -20,6 +20,7 @@ pub type DbPool = SqlitePool;
 pub struct Skill {
     pub id: String,
     pub name: String,
+    pub collection_id: String,
     pub description: Option<String>,
     pub file_path: String,
     pub canonical_path: Option<String>,
@@ -121,6 +122,7 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         "CREATE TABLE IF NOT EXISTS skills (
             id             TEXT PRIMARY KEY,
             name           TEXT NOT NULL,
+            collection_id  TEXT NOT NULL,
             description    TEXT,
             file_path      TEXT NOT NULL,
             canonical_path TEXT,
@@ -246,18 +248,31 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         .execute(pool)
         .await;
 
-    // collection_skills table
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS collection_skills (
-            collection_id TEXT NOT NULL,
-            skill_id      TEXT NOT NULL,
-            added_at      TEXT NOT NULL,
-            PRIMARY KEY (collection_id, skill_id)
-        )",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    // collection_skills table removed — skills now store collection_id directly.
+
+    // Migrate existing databases: add collection_id to skills if absent.
+    let skill_columns = sqlx::query("PRAGMA table_info(skills)")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let has_collection_id = skill_columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .ok()
+            .map(|name| name == "collection_id")
+            .unwrap_or(false)
+    });
+    if !has_collection_id {
+        sqlx::query("ALTER TABLE skills ADD COLUMN collection_id TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        let default_col = ensure_default_collection(pool).await?;
+        sqlx::query("UPDATE skills SET collection_id = ? WHERE collection_id = ''")
+            .bind(&default_col.id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     // scan_directories table
     sqlx::query(
@@ -1071,12 +1086,16 @@ pub fn builtin_agents() -> Vec<Agent> {
 pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO skills
-         (id, name, description, file_path, canonical_path, is_central, source, content, scanned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, name, collection_id, description, file_path, canonical_path, is_central, source, content, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name           = CASE
                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.name
                               ELSE excluded.name
+                            END,
+           collection_id  = CASE
+                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.collection_id
+                              ELSE excluded.collection_id
                             END,
            description    = CASE
                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.description
@@ -1103,6 +1122,7 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     )
     .bind(&skill.id)
     .bind(&skill.name)
+    .bind(&skill.collection_id)
     .bind(&skill.description)
     .bind(&skill.file_path)
     .bind(&skill.canonical_path)
@@ -1116,10 +1136,11 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-fn observation_to_skill(observation: AgentSkillObservation) -> Skill {
+fn observation_to_skill(observation: AgentSkillObservation, default_collection_id: String) -> Skill {
     Skill {
         id: observation.skill_id,
         name: observation.name,
+        collection_id: default_collection_id,
         description: observation.description,
         file_path: observation.file_path,
         canonical_path: None,
@@ -1132,10 +1153,15 @@ fn observation_to_skill(observation: AgentSkillObservation) -> Skill {
 
 /// Retrieve all skills installed for a given agent.
 pub async fn get_skills_by_agent(pool: &DbPool, agent_id: &str) -> Result<Vec<Skill>, String> {
+    let default_col = ensure_default_collection(pool).await?;
+
     if agent_id == "claude-code" {
         let observations = get_agent_skill_observations(pool, agent_id).await?;
         if !observations.is_empty() {
-            return Ok(observations.into_iter().map(observation_to_skill).collect());
+            return Ok(observations
+                .into_iter()
+                .map(|o| observation_to_skill(o, default_col.id.clone()))
+                .collect());
         }
     }
 
@@ -1379,11 +1405,6 @@ pub async fn delete_central_skill_records(
     skill_name: &str,
 ) -> Result<(), String> {
     sqlx::query("DELETE FROM skill_installations WHERE skill_id = ?")
-        .bind(skill_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM collection_skills WHERE skill_id = ?")
         .bind(skill_id)
         .execute(pool)
         .await
@@ -1765,7 +1786,7 @@ pub async fn ensure_default_collection(pool: &DbPool) -> Result<Collection, Stri
 /// Retrieve all collections with skill counts.
 pub async fn get_all_collections(pool: &DbPool) -> Result<Vec<serde_json::Value>, String> {
     let rows = sqlx::query(
-        "SELECT c.id, c.name, c.description, c.created_at, c.updated_at, c.is_default, COUNT(cs.skill_id) as skill_count FROM collections c LEFT JOIN collection_skills cs ON c.id = cs.collection_id GROUP BY c.id ORDER BY c.is_default DESC, c.created_at"
+        "SELECT c.id, c.name, c.description, c.created_at, c.updated_at, c.is_default, (SELECT COUNT(*) FROM skills WHERE collection_id = c.id) as skill_count FROM collections c ORDER BY c.is_default DESC, c.created_at"
     )
     .fetch_all(pool)
     .await
@@ -1817,13 +1838,9 @@ pub async fn update_collection(
         .map_err(|e| e.to_string())
 }
 
-/// Delete a collection and all its skill memberships.
+/// Delete a collection. Skills are **not** touched here — callers must decide
+/// whether to delete skills or move them to the default collection first.
 pub async fn delete_collection(pool: &DbPool, collection_id: &str) -> Result<(), String> {
-    sqlx::query("DELETE FROM collection_skills WHERE collection_id = ?")
-        .bind(collection_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM collections WHERE id = ?")
         .bind(collection_id)
         .execute(pool)
@@ -1832,34 +1849,30 @@ pub async fn delete_collection(pool: &DbPool, collection_id: &str) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
-/// Add a skill to a collection (idempotent).
+/// Move a skill to a collection.
 pub async fn add_skill_to_collection(
     pool: &DbPool,
     collection_id: &str,
     skill_id: &str,
 ) -> Result<(), String> {
-    let now = Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT OR IGNORE INTO collection_skills (collection_id, skill_id, added_at)
-         VALUES (?, ?, ?)",
-    )
-    .bind(collection_id)
-    .bind(skill_id)
-    .bind(&now)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    sqlx::query("UPDATE skills SET collection_id = ? WHERE id = ?")
+        .bind(collection_id)
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
-/// Remove a skill from a collection.
+/// Remove a skill from a collection by moving it to the default collection.
 pub async fn remove_skill_from_collection(
     pool: &DbPool,
-    collection_id: &str,
+    _collection_id: &str,
     skill_id: &str,
 ) -> Result<(), String> {
-    sqlx::query("DELETE FROM collection_skills WHERE collection_id = ? AND skill_id = ?")
-        .bind(collection_id)
+    let default = ensure_default_collection(pool).await?;
+    sqlx::query("UPDATE skills SET collection_id = ? WHERE id = ?")
+        .bind(&default.id)
         .bind(skill_id)
         .execute(pool)
         .await
@@ -1872,33 +1885,52 @@ pub async fn get_collection_skills(
     pool: &DbPool,
     collection_id: &str,
 ) -> Result<Vec<Skill>, String> {
-    sqlx::query_as::<_, Skill>(
-        "SELECT s.* FROM skills s
-         JOIN collection_skills cs ON s.id = cs.skill_id
-         WHERE cs.collection_id = ?
-         ORDER BY cs.added_at",
+    sqlx::query_as::<_, Skill>("SELECT * FROM skills WHERE collection_id = ? ORDER BY scanned_at")
+        .bind(collection_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Retrieve the collection that owns a given skill.
+pub async fn get_skill_collection(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<Option<Collection>, String> {
+    sqlx::query_as::<_, Collection>(
+        "SELECT c.* FROM collections c
+         JOIN skills s ON c.id = s.collection_id
+         WHERE s.id = ?",
     )
-    .bind(collection_id)
-    .fetch_all(pool)
+    .bind(skill_id)
+    .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())
 }
 
-/// Retrieve all collections that contain a given skill.
+/// Backward-compat wrapper returning a vec (0 or 1 item now that skills are
+/// owned by exactly one collection).
 pub async fn get_skill_collections(
     pool: &DbPool,
     skill_id: &str,
 ) -> Result<Vec<Collection>, String> {
-    sqlx::query_as::<_, Collection>(
-        "SELECT c.* FROM collections c
-         JOIN collection_skills cs ON c.id = cs.collection_id
-         WHERE cs.skill_id = ?
-         ORDER BY cs.added_at",
-    )
-    .bind(skill_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())
+    let col = get_skill_collection(pool, skill_id).await?;
+    Ok(col.into_iter().collect())
+}
+
+/// Move all skills from one collection to another.
+pub async fn update_skills_collection(
+    pool: &DbPool,
+    from_collection_id: &str,
+    to_collection_id: &str,
+) -> Result<u64, String> {
+    let result = sqlx::query("UPDATE skills SET collection_id = ? WHERE collection_id = ?")
+        .bind(to_collection_id)
+        .bind(from_collection_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected())
 }
 
 // ─── Scan Directories ─────────────────────────────────────────────────────────
@@ -2142,7 +2174,6 @@ mod tests {
             "agent_skill_observations",
             "agents",
             "collections",
-            "collection_skills",
             "scan_directories",
             "settings",
         ];
@@ -2423,6 +2454,7 @@ mod tests {
         Skill {
             id: id.to_string(),
             name: name.to_string(),
+            collection_id: "test-collection".to_string(),
             description: Some(format!("Description for {}", name)),
             file_path: format!("/tmp/{}/SKILL.md", id),
             canonical_path: if is_central {
@@ -2839,13 +2871,9 @@ mod tests {
 
         delete_collection(&pool, &col.id).await.unwrap();
 
-        // The collection_skills row should also be gone
-        let rows: Vec<_> = sqlx::query("SELECT * FROM collection_skills WHERE collection_id = ?")
-            .bind(&col.id)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert!(rows.is_empty(), "Memberships should be cascade-deleted");
+        // The collection itself should be gone.
+        let found = get_collection_by_id(&pool, &col.id).await.unwrap();
+        assert!(found.is_none(), "Collection should be deleted");
     }
 
     // ── Scan Directories ──────────────────────────────────────────────────────

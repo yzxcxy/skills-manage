@@ -39,6 +39,7 @@ export interface ScannedSkill {
   id: string;
   row_id?: string;
   name: string;
+  collection_id?: string;
   description?: string;
   file_path: string;
   dir_path: string;
@@ -57,6 +58,7 @@ export interface ScannedSkill {
 export interface Skill {
   id: string;
   name: string;
+  collection_id?: string;
   description?: string;
   file_path: string;
   canonical_path?: string;
@@ -108,6 +110,7 @@ export interface SkillDetailRequest {
 export interface SkillWithLinks {
   id: string;
   name: string;
+  collection_id?: string;
   description?: string;
   file_path: string;
   canonical_path?: string;

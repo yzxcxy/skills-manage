@@ -83,13 +83,20 @@ export const usePlatformStore = create<PlatformState>((set) => ({
       }));
       return;
     }
+
+    // Load agents first so the sidebar always shows the platform list even if
+    // the scan fails later.
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const agents = await invoke<AgentWithStatus[]>("get_agents");
+      set({ agents });
+    } catch (err) {
+      set({ error: String(err), isLoading: false });
+      return;
+    }
+
+    try {
+      const scanResult = await invoke<ScanResult>("scan_all_skills");
       set((state) => ({
-        agents,
         skillsByAgent: scanResult.skills_by_agent,
         isLoading: false,
         scanGeneration: (state.scanGeneration ?? 0) + 1,
@@ -114,13 +121,18 @@ export const usePlatformStore = create<PlatformState>((set) => ({
       }));
       return;
     }
+
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const agents = await invoke<AgentWithStatus[]>("get_agents");
+      set({ agents });
+    } catch (err) {
+      set({ error: String(err), isLoading: false });
+      return;
+    }
+
+    try {
+      const scanResult = await invoke<ScanResult>("scan_all_skills");
       set((state) => ({
-        agents,
         skillsByAgent: scanResult.skills_by_agent,
         isLoading: false,
         scanGeneration: (state.scanGeneration ?? 0) + 1,
@@ -142,13 +154,18 @@ export const usePlatformStore = create<PlatformState>((set) => ({
       }));
       return;
     }
+
     try {
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const agents = await invoke<AgentWithStatus[]>("get_agents");
+      set({ agents });
+    } catch (err) {
+      set({ error: String(err), isRefreshing: false });
+      return;
+    }
+
+    try {
+      const scanResult = await invoke<ScanResult>("scan_all_skills");
       set((state) => ({
-        agents,
         skillsByAgent: scanResult.skills_by_agent,
         isRefreshing: false,
         isLoading: state.isLoading,

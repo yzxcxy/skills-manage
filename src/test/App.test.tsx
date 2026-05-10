@@ -100,6 +100,35 @@ vi.mock("../stores/obsidianStore", () => ({
   }),
 }));
 
+vi.mock("../stores/marketplaceStore", () => ({
+  useMarketplaceStore: vi.fn().mockImplementation((selector?: unknown) => {
+    const state = {
+      registries: [],
+      skills: [],
+      isLoading: false,
+      githubImport: {
+        isPreviewLoading: false,
+        isImporting: false,
+        preview: null,
+        importResult: null,
+        previewedRepoUrl: null,
+        error: null,
+        importProgress: null,
+        importStartedAt: null,
+        skillMarkdown: {},
+        aiSummaries: {},
+      },
+      previewGitHubRepoImport: vi.fn(),
+      importGitHubRepoSkills: vi.fn(),
+      resetGitHubImport: vi.fn(),
+    };
+    if (typeof selector === "function") {
+      return selector(state);
+    }
+    return state;
+  }),
+}));
+
 describe("App", () => {
   it("renders the app shell with top bar", async () => {
     await act(async () => {

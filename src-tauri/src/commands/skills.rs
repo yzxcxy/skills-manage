@@ -192,7 +192,7 @@ fn canonical_delete_dir(skill: &db::Skill, central_root: &Path) -> PathBuf {
         .as_deref()
         .map(PathBuf::from)
         .or_else(|| Path::new(&skill.file_path).parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| central_root.join(&skill.id))
+        .unwrap_or_else(|| central_root.join(&skill.collection_id).join(&skill.id))
 }
 
 fn ensure_under_central_root(path: &Path, central_root: &Path) -> Result<(), String> {
@@ -1289,6 +1289,7 @@ mod tests {
         Skill {
             id: id.to_string(),
             name: name.to_string(),
+            collection_id: "test-collection".to_string(),
             description: Some(format!("Desc for {}", name)),
             file_path: format!("/tmp/{}/SKILL.md", id),
             canonical_path: if is_central {
@@ -1373,7 +1374,8 @@ mod tests {
     }
 
     async fn create_central_skill(pool: &SqlitePool, central_dir: &Path, skill_id: &str) -> Skill {
-        let skill_dir = central_dir.join(skill_id);
+        let default_col = db::ensure_default_collection(pool).await.unwrap();
+        let skill_dir = central_dir.join(&default_col.id).join(skill_id);
         fs::create_dir_all(&skill_dir).unwrap();
         let skill_md_path = skill_dir.join("SKILL.md");
         fs::write(
@@ -1385,6 +1387,7 @@ mod tests {
         let skill = Skill {
             id: skill_id.to_string(),
             name: skill_id.to_string(),
+            collection_id: default_col.id,
             description: Some("Test skill".to_string()),
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
@@ -1411,9 +1414,11 @@ mod tests {
         )
         .unwrap();
 
+        let default_col = db::ensure_default_collection(pool).await.unwrap();
         let skill = Skill {
             id: skill_id.to_string(),
             name: skill_id.to_string(),
+            collection_id: default_col.id,
             description: Some("Nested test skill".to_string()),
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
@@ -1643,19 +1648,15 @@ mod tests {
         .await
         .unwrap();
 
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
+
         assert_eq!(result.skill_id, "delete-me");
-        assert!(!central_dir.join("delete-me").exists());
+        assert!(!central_dir.join(&default_col.id).join("delete-me").exists());
         assert!(db::get_skill_by_id(&pool, "delete-me")
             .await
             .unwrap()
             .is_none());
 
-        let collection_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM collection_skills WHERE skill_id = 'delete-me'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
         let explanation_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM skill_explanations WHERE skill_id = 'delete-me'",
         )
@@ -1669,7 +1670,6 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(collection_count, 0);
         assert_eq!(explanation_count, 0);
         assert_eq!(is_installed, 0);
     }
@@ -1682,6 +1682,7 @@ mod tests {
         let pool = setup_test_db().await;
         set_agent_dir(&pool, "central", &central_dir).await;
         create_central_skill(&pool, &central_dir, "linked-skill").await;
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
 
         db::upsert_skill_installation(
             &pool,
@@ -1697,6 +1698,7 @@ mod tests {
                 link_type: "symlink".to_string(),
                 symlink_target: Some(
                     central_dir
+                        .join(&default_col.id)
                         .join("linked-skill")
                         .to_string_lossy()
                         .into_owned(),
@@ -1718,7 +1720,7 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("installed on agents"));
-        assert!(central_dir.join("linked-skill").exists());
+        assert!(central_dir.join(&default_col.id).join("linked-skill").exists());
         assert!(db::get_skill_by_id(&pool, "linked-skill")
             .await
             .unwrap()
@@ -1736,9 +1738,10 @@ mod tests {
         set_agent_dir(&pool, "central", &central_dir).await;
         set_agent_dir(&pool, "claude-code", &claude_dir).await;
         create_central_skill(&pool, &central_dir, "cascade-me").await;
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
 
         let install_path = claude_dir.join("cascade-me");
-        create_symlink(&central_dir.join("cascade-me"), &install_path).unwrap();
+        create_symlink(&central_dir.join(&default_col.id).join("cascade-me"), &install_path).unwrap();
         db::upsert_skill_installation(
             &pool,
             &SkillInstallation {
@@ -1748,6 +1751,7 @@ mod tests {
                 link_type: "symlink".to_string(),
                 symlink_target: Some(
                     central_dir
+                        .join(&default_col.id)
                         .join("cascade-me")
                         .to_string_lossy()
                         .into_owned(),
@@ -1770,7 +1774,7 @@ mod tests {
 
         assert_eq!(result.uninstalled_agents, vec!["claude-code".to_string()]);
         assert!(!install_path.exists());
-        assert!(!central_dir.join("cascade-me").exists());
+        assert!(!central_dir.join(&default_col.id).join("cascade-me").exists());
         assert!(db::get_skill_installations(&pool, "cascade-me")
             .await
             .unwrap()
@@ -2170,6 +2174,14 @@ mod tests {
         db::add_skill_to_collection(&pool, &alpha.id, "detail-skill")
             .await
             .unwrap();
+
+        let detail = get_skill_detail_impl(&pool, "detail-skill").await.unwrap();
+        let collection_names: Vec<&str> =
+            detail.collections.iter().map(|c| c.name.as_str()).collect();
+
+        assert_eq!(collection_names, vec!["Alpha"]);
+
+        // Moving to another collection replaces the previous one.
         db::add_skill_to_collection(&pool, &beta.id, "detail-skill")
             .await
             .unwrap();
@@ -2178,7 +2190,7 @@ mod tests {
         let collection_names: Vec<&str> =
             detail.collections.iter().map(|c| c.name.as_str()).collect();
 
-        assert_eq!(collection_names, vec!["Alpha", "Beta"]);
+        assert_eq!(collection_names, vec!["Beta"]);
     }
 
     #[tokio::test]
@@ -2201,9 +2213,11 @@ mod tests {
         let expected_content = "---\nname: My Skill\n---\n\n# My Skill\n\nContent here.";
         fs::write(&skill_md_path, expected_content).unwrap();
 
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
         let skill = Skill {
             id: "my-skill".to_string(),
             name: "My Skill".to_string(),
+            collection_id: default_col.id,
             description: None,
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: None,
@@ -2221,10 +2235,12 @@ mod tests {
     #[tokio::test]
     async fn test_read_skill_content_file_not_found() {
         let pool = setup_test_db().await;
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
 
         let skill = Skill {
             id: "missing-file-skill".to_string(),
             name: "Missing File".to_string(),
+            collection_id: default_col.id,
             description: None,
             file_path: "/nonexistent/SKILL.md".to_string(),
             canonical_path: None,

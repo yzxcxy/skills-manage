@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Blocks, Search, Settings } from "lucide-react";
+import { Blocks, Search } from "lucide-react";
 
 import { usePlatformStore } from "@/stores/platformStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
@@ -123,19 +123,6 @@ export function TopBar({ onSearchClick }: TopBarProps) {
         </div>
       )}
 
-      {/* Settings */}
-      <button
-        onClick={() => navigate("/settings")}
-        className={cn(
-          "z-10 p-1.5 rounded-md transition-colors cursor-pointer shrink-0",
-          "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-          pathname === "/settings" && "bg-muted/60 text-foreground",
-        )}
-        aria-label={t("sidebar.settings")}
-        title={t("sidebar.settings")}
-      >
-        <Settings className="size-4" />
-      </button>
     </header>
   );
 }

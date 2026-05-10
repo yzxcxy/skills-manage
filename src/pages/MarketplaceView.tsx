@@ -262,7 +262,10 @@ export function MarketplaceView() {
       // Write via the Tauri FS plugin
       const { writeTextFile, mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
       const centralAgent = centralAgents.find((a) => a.id === "central");
-      const centralDir = centralAgent?.global_skills_dir ?? "~/.skillsmanage/central";
+      const centralDir = centralAgent?.global_skills_dir;
+      if (!centralDir) {
+        throw new Error("Central agent directory not available");
+      }
       const skillDir = `${centralDir}/${skill.name}`;
       // global_skills_dir is relative to home; guard against absolute paths to avoid
       // double-resolution when BaseDirectory.Home is used.

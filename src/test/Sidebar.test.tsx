@@ -249,10 +249,9 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("button", { name: /导入技能集/i })).not.toBeInTheDocument();
   });
 
-  it("does not render Settings (moved to TopBar)", () => {
+  it("renders Settings button in sidebar", () => {
     renderSidebar();
-    // Settings button no longer exists in sidebar
-    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /设置/ })).toBeInTheDocument();
   });
 
   it("does not render legacy section headers", () => {
@@ -307,10 +306,10 @@ describe("Sidebar", () => {
     expect(centralButton.className).toContain("bg-hover-bg");
   });
 
-  it("does not highlight Settings in sidebar (moved to TopBar)", () => {
+  it("highlights Settings when on /settings", () => {
     renderSidebar("/settings");
-    // No settings button in sidebar anymore
-    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
+    const settingsButton = screen.getByRole("button", { name: /设置/ });
+    expect(settingsButton.className).toContain("bg-hover-bg");
   });
 
   // ── Empty States ──────────────────────────────────────────────────────────

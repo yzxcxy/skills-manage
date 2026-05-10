@@ -136,10 +136,10 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
   /**
    * Delete a collection and refresh the list.
    */
-  deleteCollection: async (id: string) => {
+  deleteCollection: async (id: string, deleteSkills?: boolean) => {
     set({ error: null });
     try {
-      await invoke("delete_collection", { collectionId: id });
+      await invoke("delete_collection", { collectionId: id, deleteSkills: deleteSkills ?? false });
       // Refresh collections list.
       const collections = await invoke<Collection[]>("get_collections");
       set({ collections: collections ?? [] });

@@ -208,7 +208,21 @@ async fn canonical_dir_for_skill(
         }
     }
 
-    Ok(central_root.join(skill_id))
+    // Fallback: search all collection subdirectories for the skill.
+    if let Ok(entries) = std::fs::read_dir(central_root) {
+        for entry in entries.flatten() {
+            let collection_path = entry.path();
+            if !collection_path.is_dir() {
+                continue;
+            }
+            let skill_path = collection_path.join(skill_id);
+            if skill_path.join("SKILL.md").exists() {
+                return Ok(skill_path);
+            }
+        }
+    }
+
+    Err(format!("Canonical skill '{}' not found in central directory", skill_id))
 }
 
 async fn existing_install_path_for_agent(
@@ -608,7 +622,7 @@ mod tests {
 
     /// Create a minimal skill directory containing a valid `SKILL.md`.
     fn create_central_skill(central_dir: &Path, skill_id: &str) -> PathBuf {
-        let skill_dir = central_dir.join(skill_id);
+        let skill_dir = central_dir.join("test-collection").join(skill_id);
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -690,6 +704,7 @@ mod tests {
         assert_eq!(
             result.symlink_path,
             central_dir
+                .join("test-collection")
                 .join("universal-skill")
                 .to_string_lossy()
                 .into_owned()
@@ -806,11 +821,13 @@ mod tests {
         .unwrap();
 
         let pool = setup_db(&central_dir, &agent_dir).await;
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
         db::upsert_skill(
             &pool,
             &db::Skill {
                 id: "using-superpowers".to_string(),
                 name: "using-superpowers".to_string(),
+                collection_id: default_col.id,
                 description: Some("Nested central".to_string()),
                 file_path: nested_skill_dir
                     .join("SKILL.md")
@@ -1059,7 +1076,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            central_dir.join("universal-skill/SKILL.md").exists(),
+            central_dir.join("test-collection").join("universal-skill").join("SKILL.md").exists(),
             "uninstalling read-only universal availability must not delete the central skill"
         );
     }
@@ -1218,7 +1235,7 @@ mod tests {
         let pool = setup_db(&central_dir, &agent_dir).await;
 
         // Create skill with multiple files to verify all are copied.
-        let skill_dir = central_dir.join("multi-file-skill");
+        let skill_dir = central_dir.join("test-collection").join("multi-file-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),

@@ -1514,17 +1514,26 @@ pub async fn import_discovered_skill_to_central(
         .ok_or_else(|| "Cannot extract skill directory name".to_string())?
         .to_string();
 
-    let target_dir = central_dir.join(&skill_dir_name);
+    // Resolve target collection first so we know the directory layout.
+    let target_collection_id = if let Some(cid) = collection_id.clone() {
+        cid
+    } else {
+        db::ensure_default_collection(pool).await?.id
+    };
 
-    // Check if a skill with this name already exists in central.
+    let target_dir = central_dir.join(&target_collection_id).join(&skill_dir_name);
+
+    // Check if a skill with this name already exists in this collection.
     if target_dir.exists() {
         return Err(format!(
-            "A skill named '{}' already exists in central skills",
+            "A skill named '{}' already exists in collection",
             skill_dir_name
         ));
     }
 
     // Copy the skill directory to central.
+    std::fs::create_dir_all(target_dir.parent().unwrap())
+        .map_err(|e| format!("Failed to create collection directory: {}", e))?;
     super::linker::copy_dir_all(Path::new(&skill.dir_path), &target_dir)?;
 
     // Now we need to re-scan so the new central skill gets picked up.
@@ -1537,6 +1546,7 @@ pub async fn import_discovered_skill_to_central(
         let db_skill = db::Skill {
             id: skill_dir_name.clone(),
             name: skill_info.name,
+            collection_id: target_collection_id.clone(),
             description: skill_info.description,
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(target_dir.to_string_lossy().into_owned()),
@@ -1548,12 +1558,6 @@ pub async fn import_discovered_skill_to_central(
         db::upsert_skill(pool, &db_skill).await?;
     }
 
-    // Associate with collection (provided or default).
-    let target_collection_id = if let Some(cid) = collection_id {
-        cid
-    } else {
-        db::ensure_default_collection(pool).await?.id
-    };
     let _ = db::add_skill_to_collection(pool, &target_collection_id, &skill_dir_name).await;
 
     // Remove the discovered skill record since it's now centralized.
@@ -1652,9 +1656,11 @@ async fn import_discovered_skill_to_platform_from_pool(
     };
 
     if let Some(skill_info) = info {
+        let default_col = db::ensure_default_collection(pool).await?;
         let db_skill = db::Skill {
             id: skill_dir_name.clone(),
             name: skill_info.name,
+            collection_id: default_col.id,
             description: skill_info.description,
             file_path: stored_skill_md_path.to_string_lossy().into_owned(),
             canonical_path: None,
@@ -2890,9 +2896,11 @@ mod tests {
 
         if let Some(skill_info) = info {
             let now = Utc::now().to_rfc3339();
+            let default_col = db::ensure_default_collection(pool).await?;
             let db_skill = db::Skill {
                 id: skill_dir_name.clone(),
                 name: skill_info.name,
+                collection_id: default_col.id,
                 description: skill_info.description,
                 file_path: skill_md_path.to_string_lossy().into_owned(),
                 canonical_path: Some(target_dir.to_string_lossy().into_owned()),
@@ -3401,9 +3409,11 @@ mod tests {
         let info = super::super::scanner::parse_skill_md(&skill_md_path);
 
         if let Some(skill_info) = info {
+            let default_col = db::ensure_default_collection(pool).await?;
             let db_skill = db::Skill {
                 id: skill_dir_name.clone(),
                 name: skill_info.name,
+                collection_id: default_col.id,
                 description: skill_info.description,
                 file_path: skill_md_path.to_string_lossy().into_owned(),
                 canonical_path: None,

@@ -231,6 +231,70 @@ pub fn scan_directory(dir: &Path, is_central: bool) -> Vec<ScannedSkill> {
     skills
 }
 
+/// Walk a central skills root one level deep for collection directories,
+/// then one level deep inside each collection for skill directories.
+/// This produces the canonical `collection/skill` layout.
+fn scan_central_skill_dir(skill_path: &Path) -> Option<ScannedSkill> {
+    let skill_md_path = skill_path.join("SKILL.md");
+    if !skill_md_path.exists() {
+        return None;
+    }
+
+    let info = parse_skill_md(&skill_md_path)?;
+    let (link_type, symlink_target) = detect_link_type(skill_path, true);
+
+    let id = skill_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_lowercase().replace(' ', "-"))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(ScannedSkill {
+        id,
+        name: info.name,
+        description: info.description,
+        file_path: skill_md_path.to_string_lossy().into_owned(),
+        dir_path: skill_path.to_string_lossy().into_owned(),
+        link_type,
+        symlink_target,
+        is_central: true,
+    })
+}
+
+pub fn scan_central_directory(central_dir: &Path) -> Vec<ScannedSkill> {
+    let mut skills = Vec::new();
+
+    let collection_entries = match std::fs::read_dir(central_dir) {
+        Ok(e) => e,
+        Err(_) => return skills,
+    };
+
+    for collection_entry in collection_entries.flatten() {
+        let collection_path = collection_entry.path();
+        if !collection_path.is_dir() {
+            continue;
+        }
+
+        let skill_entries = match std::fs::read_dir(&collection_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for skill_entry in skill_entries.flatten() {
+            let skill_path = skill_entry.path();
+            if !skill_path.is_dir() {
+                continue;
+            }
+
+            if let Some(skill) = scan_central_skill_dir(&skill_path) {
+                skills.push(skill);
+            }
+        }
+    }
+
+    skills
+}
+
 const NESTED_SCAN_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -603,8 +667,13 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 .unwrap_or(&root.path)
                 .to_string_lossy()
                 .into_owned();
-            let root_scanned =
-                scan_skill_root(&root.path, is_central, ScanDirectoryOptions::nested());
+
+            // Central directory uses a two-level layout: collection/skill.
+            let root_scanned = if is_central {
+                scan_central_directory(&root.path)
+            } else {
+                scan_skill_root(&root.path, is_central, ScanDirectoryOptions::nested())
+            };
 
             for skill in &root_scanned {
                 let now = Utc::now().to_rfc3339();
@@ -636,9 +705,25 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                     all_found_skill_ids.insert(skill.id.clone());
                     found_install_ids.push(skill.id.clone());
 
+                    // For central skills, infer collection_id from the parent directory name.
+                    let inferred_collection_id = if is_central {
+                        Path::new(&skill.dir_path)
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    let collection_id = match inferred_collection_id {
+                        Some(cid) if db::get_collection_by_id(pool, &cid).await?.is_some() => cid,
+                        _ => db::ensure_default_collection(pool).await?.id,
+                    };
+
                     let db_skill = Skill {
                         id: skill.id.clone(),
                         name: skill.name.clone(),
+                        collection_id,
                         description: skill.description.clone(),
                         file_path: skill.file_path.clone(),
                         canonical_path: if is_central {
@@ -692,12 +777,14 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         }
 
         let scanned = scan_skill_root(dir, false, ScanDirectoryOptions::nested());
+        let default_col = db::ensure_default_collection(pool).await?;
         for skill in &scanned {
             all_found_skill_ids.insert(skill.id.clone());
             let now = Utc::now().to_rfc3339();
             let db_skill = Skill {
                 id: skill.id.clone(),
                 name: skill.name.clone(),
+                collection_id: default_col.id.clone(),
                 description: skill.description.clone(),
                 file_path: skill.file_path.clone(),
                 canonical_path: None,
@@ -1312,8 +1399,11 @@ mod tests {
             .await
             .unwrap();
 
+        // Central directory uses two-level layout: collection/skill.
+        let collection_dir = tmp.path().join("test-collection");
+        fs::create_dir_all(&collection_dir).unwrap();
         create_skill_dir(
-            tmp.path(),
+            &collection_dir,
             "canon-skill",
             &valid_skill_md("Canon Skill", "Canonical"),
         );
@@ -2391,9 +2481,11 @@ mod tests {
             .unwrap();
         db::insert_custom_agent(&pool, &coding_agent).await.unwrap();
 
-        // Place one skill in the shared directory.
+        // Place one skill in the shared directory (two-level layout).
+        let collection_dir = tmp.path().join("test-collection");
+        fs::create_dir_all(&collection_dir).unwrap();
         create_skill_dir(
-            tmp.path(),
+            &collection_dir,
             "shared-skill",
             &valid_skill_md("Shared Skill", "desc"),
         );
