@@ -125,7 +125,7 @@ export function CollectionDetailView() {
     setIsDeleting(true);
     try {
       await deleteCollection(collectionId);
-      navigate("/collections");
+      navigate("/central");
     } catch (err) {
       toast.error(t("collection.deleteError", { error: String(err) }));
     } finally {
@@ -195,7 +195,7 @@ export function CollectionDetailView() {
       } else {
         toast.success(t("collection.deleteSkillsSuccess", { count: result.deletedSkillIds.length }));
       }
-      navigate("/collections");
+      navigate("/central");
     } catch (err) {
       toast.error(t("collection.deleteSkillsError", { error: String(err) }));
     } finally {
@@ -220,10 +220,10 @@ export function CollectionDetailView() {
           <ol className="flex items-center gap-1.5 text-xs text-muted-foreground min-w-0">
             <li className="shrink-0">
               <Link
-                to="/collections"
+                to="/central"
                 className="hover:text-foreground hover:underline truncate"
               >
-                {t("sidebar.collections")}
+                {t("sidebar.centralSkills")}
               </Link>
             </li>
             <li aria-hidden="true" className="text-muted-foreground/60 shrink-0">

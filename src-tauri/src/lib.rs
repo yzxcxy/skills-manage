@@ -35,6 +35,11 @@ pub fn run() {
                     .expect("Failed to initialize database schema")
             });
 
+            // Ensure default collection exists.
+            tauri::async_runtime::block_on(async {
+                let _ = db::ensure_default_collection(&pool).await;
+            });
+
             app.manage(AppState { db: pool });
             Ok(())
         })

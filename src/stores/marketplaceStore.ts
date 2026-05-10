@@ -62,7 +62,9 @@ interface MarketplaceState {
   previewGitHubRepoImport: (repoUrl: string) => Promise<GitHubRepoPreview>;
   importGitHubRepoSkills: (
     repoUrl: string,
-    selections: GitHubSkillImportSelection[]
+    selections: GitHubSkillImportSelection[],
+    collectionId?: string,
+    collectionName?: string,
   ) => Promise<GitHubRepoImportResult>;
   fetchGitHubSkillMarkdown: (sourcePath: string, downloadUrl: string) => Promise<void>;
   generateGitHubImportAiSummary: (
@@ -360,7 +362,12 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }
   },
 
-  importGitHubRepoSkills: async (repoUrl: string, selections: GitHubSkillImportSelection[]) => {
+  importGitHubRepoSkills: async (
+    repoUrl: string,
+    selections: GitHubSkillImportSelection[],
+    collectionId?: string,
+    collectionName?: string
+  ) => {
     if (!isTauriRuntime()) {
       const error = "Desktop-only feature: GitHub repo import is available in the Tauri app.";
       set((state) => ({
@@ -399,6 +406,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       const importResult = await invoke<GitHubRepoImportResult>("import_github_repo_skills", {
         repoUrl,
         selections,
+        collectionId: collectionId ?? null,
+        collectionName: collectionName ?? null,
       });
       set((state) => ({
         githubImport: {

@@ -306,9 +306,18 @@ export function MarketplaceView() {
     }
   }
 
-  async function handleGitHubImport(selections: Parameters<typeof importGitHubRepoSkills>[1]) {
+  async function handleGitHubImport(
+    selections: Parameters<typeof importGitHubRepoSkills>[1],
+    collectionId?: string,
+    collectionName?: string,
+  ) {
     try {
-      const result = await importGitHubRepoSkills(githubRepoUrl, selections);
+      const result = await importGitHubRepoSkills(
+        githubRepoUrl,
+        selections,
+        collectionId,
+        collectionName,
+      );
       await Promise.all([rescan(), loadRegistries(), loadCentralSkills()]);
       toast.success(
         lang === "zh" ? "GitHub 仓库技能已导入中央技能库" : "GitHub repo skills imported to Central"

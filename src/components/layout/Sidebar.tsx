@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import {
   Loader2,
   Blocks,
-  Layers,
+  LayoutGrid,
   Radar,
   Store,
   Eye,
@@ -156,11 +156,7 @@ export function Sidebar() {
   const populatedObsidianVaults = obsidianVaults.filter((vault) => vault.skill_count > 0);
   const activeObsidianVaultId = getActiveObsidianVaultId(pathname);
 
-  const isCollectionActive = pathname === "/collections";
 
-  function handleCollectionClick() {
-    navigate("/collections");
-  }
 
   return (
     <nav
@@ -201,14 +197,23 @@ export function Sidebar() {
 
       {/* Scrollable nav items */}
       <div className="flex-1 overflow-y-auto py-2 px-1.5 space-y-0.5">
-        {/* Central Skills */}
+        {/* Central Skills Warehouse */}
         <NavItem
           label={t("sidebar.centralSkills")}
-          isActive={pathname === "/central" || pathname === "/"}
+          isActive={pathname === "/central" || pathname.startsWith("/collection/")}
           onClick={() => navigate("/central")}
           icon={<Blocks className="size-4" />}
           expanded={expanded}
-          count={skillsByAgent["central"]}
+          count={collections.length}
+        />
+
+        {/* All Skills */}
+        <NavItem
+          label={t("sidebar.allSkills")}
+          isActive={pathname === "/skills" || pathname.startsWith("/skill/")}
+          onClick={() => navigate("/skills")}
+          icon={<LayoutGrid className="size-4" />}
+          expanded={expanded}
         />
 
         {/* Discover */}
@@ -228,16 +233,6 @@ export function Sidebar() {
           onClick={() => navigate("/marketplace")}
           icon={<Store className="size-4" />}
           expanded={expanded}
-        />
-
-        {/* Collections */}
-        <NavItem
-          label={t("sidebar.collections")}
-          isActive={isCollectionActive}
-          onClick={handleCollectionClick}
-          icon={<Layers className="size-4" />}
-          expanded={expanded}
-          count={collections.length}
         />
 
         {/* Divider */}

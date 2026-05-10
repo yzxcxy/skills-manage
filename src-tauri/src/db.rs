@@ -77,6 +77,7 @@ pub struct Collection {
     pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -232,12 +233,18 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             name        TEXT NOT NULL,
             description TEXT,
             created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
+            updated_at  TEXT NOT NULL,
+            is_default  BOOLEAN NOT NULL DEFAULT 0
         )",
     )
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    // Migrate existing databases: add is_default column if it doesn't exist.
+    let _ = sqlx::query("ALTER TABLE collections ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
 
     // collection_skills table
     sqlx::query(
@@ -1714,19 +1721,21 @@ pub async fn create_collection(
     pool: &DbPool,
     name: &str,
     description: Option<&str>,
+    is_default: bool,
 ) -> Result<Collection, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO collections (id, name, description, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO collections (id, name, description, created_at, updated_at, is_default)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(name)
     .bind(description)
     .bind(&now)
     .bind(&now)
+    .bind(is_default)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -1736,12 +1745,45 @@ pub async fn create_collection(
         .ok_or_else(|| "Failed to retrieve newly created collection".to_string())
 }
 
-/// Retrieve all collections.
-pub async fn get_all_collections(pool: &DbPool) -> Result<Vec<Collection>, String> {
-    sqlx::query_as::<_, Collection>("SELECT * FROM collections ORDER BY created_at")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())
+/// Ensure a default collection exists. Returns the existing one or creates it.
+pub async fn ensure_default_collection(pool: &DbPool) -> Result<Collection, String> {
+    // Try to find existing default collection.
+    let existing: Option<Collection> = sqlx::query_as::<_, Collection>(
+        "SELECT * FROM collections WHERE is_default = 1 LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(col) = existing {
+        return Ok(col);
+    }
+
+    create_collection(pool, "默认集合", Some("系统自动创建的默认技能集合"), true).await
+}
+
+/// Retrieve all collections with skill counts.
+pub async fn get_all_collections(pool: &DbPool) -> Result<Vec<serde_json::Value>, String> {
+    let rows = sqlx::query(
+        "SELECT c.id, c.name, c.description, c.created_at, c.updated_at, c.is_default, COUNT(cs.skill_id) as skill_count FROM collections c LEFT JOIN collection_skills cs ON c.id = cs.collection_id GROUP BY c.id ORDER BY c.is_default DESC, c.created_at"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut collections = Vec::new();
+    for row in rows {
+        let mut obj = serde_json::Map::new();
+        obj.insert("id".to_string(), serde_json::json!(row.get::<String, _>("id")));
+        obj.insert("name".to_string(), serde_json::json!(row.get::<String, _>("name")));
+        obj.insert("description".to_string(), serde_json::json!(row.get::<Option<String>, _>("description")));
+        obj.insert("created_at".to_string(), serde_json::json!(row.get::<String, _>("created_at")));
+        obj.insert("updated_at".to_string(), serde_json::json!(row.get::<String, _>("updated_at")));
+        obj.insert("is_default".to_string(), serde_json::json!(row.get::<bool, _>("is_default")));
+        obj.insert("skill_count".to_string(), serde_json::json!(row.get::<i64, _>("skill_count")));
+        collections.push(serde_json::Value::Object(obj));
+    }
+    Ok(collections)
 }
 
 /// Retrieve a collection by ID.
@@ -2699,7 +2741,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_collection() {
         let pool = setup_test_db().await;
-        let col = create_collection(&pool, "My Collection", Some("A test collection"))
+        let col = create_collection(&pool, "My Collection", Some("A test collection"), false)
             .await
             .unwrap();
         assert!(!col.id.is_empty());
@@ -2710,10 +2752,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_all_collections() {
         let pool = setup_test_db().await;
-        create_collection(&pool, "Collection A", None)
+        create_collection(&pool, "Collection A", None, false)
             .await
             .unwrap();
-        create_collection(&pool, "Collection B", Some("Desc"))
+        create_collection(&pool, "Collection B", Some("Desc"), false)
             .await
             .unwrap();
 
@@ -2724,7 +2766,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_collection() {
         let pool = setup_test_db().await;
-        let col = create_collection(&pool, "Old Name", None).await.unwrap();
+        let col = create_collection(&pool, "Old Name", None, false).await.unwrap();
         update_collection(&pool, &col.id, "New Name", Some("New desc"))
             .await
             .unwrap();
@@ -2737,7 +2779,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_collection() {
         let pool = setup_test_db().await;
-        let col = create_collection(&pool, "To Delete", None).await.unwrap();
+        let col = create_collection(&pool, "To Delete", None, false).await.unwrap();
         delete_collection(&pool, &col.id).await.unwrap();
 
         let retrieved = get_collection_by_id(&pool, &col.id).await.unwrap();
@@ -2749,7 +2791,7 @@ mod tests {
         let pool = setup_test_db().await;
         let skill = make_skill("collection-skill", "Collection Skill", false);
         upsert_skill(&pool, &skill).await.unwrap();
-        let col = create_collection(&pool, "Test Col", None).await.unwrap();
+        let col = create_collection(&pool, "Test Col", None, false).await.unwrap();
 
         add_skill_to_collection(&pool, &col.id, "collection-skill")
             .await
@@ -2772,7 +2814,7 @@ mod tests {
         let pool = setup_test_db().await;
         let skill = make_skill("idem-skill", "Idem Skill", false);
         upsert_skill(&pool, &skill).await.unwrap();
-        let col = create_collection(&pool, "Idem Col", None).await.unwrap();
+        let col = create_collection(&pool, "Idem Col", None, false).await.unwrap();
 
         add_skill_to_collection(&pool, &col.id, "idem-skill")
             .await
@@ -2790,7 +2832,7 @@ mod tests {
         let pool = setup_test_db().await;
         let skill = make_skill("cascade-skill", "Cascade Skill", false);
         upsert_skill(&pool, &skill).await.unwrap();
-        let col = create_collection(&pool, "Cascade Col", None).await.unwrap();
+        let col = create_collection(&pool, "Cascade Col", None, false).await.unwrap();
         add_skill_to_collection(&pool, &col.id, "cascade-skill")
             .await
             .unwrap();

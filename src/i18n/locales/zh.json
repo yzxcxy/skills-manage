@@ -23,7 +23,7 @@
   },
   "sidebar": {
     "byTool": "按工具",
-    "centralSkills": "中央技能库",
+    "centralSkills": "中央技能仓库",
     "collections": "技能集合",
     "settings": "设置",
     "scanning": "扫描中...",
@@ -35,6 +35,7 @@
     "newCollectionLabel": "新建技能集",
     "importCollectionInput": "导入技能集 JSON 文件",
     "mainNav": "主导航",
+    "allSkills": "所有技能",
     "discovered": "项目技能库",
     "rescan": "重新扫描...",
     "categoryLobster": "龙虾类",
@@ -86,8 +87,11 @@
     "noSkills": "此目录中没有匹配的技能。"
   },
   "central": {
-    "title": "中央技能库",
+    "title": "中央技能仓库",
     "path": "~/.skillsmanage/central/",
+    "allSkills": "所有技能",
+    "allSkillsDesc": "查看和管理所有技能",
+    "defaultCollection": "默认集合",
     "searchPlaceholder": "搜索中央技能库...",
     "loading": "正在加载技能...",
     "noMatch": "没有匹配的技能「{{query}}」",
@@ -331,6 +335,15 @@
     "add": "添加",
     "addCount": "添加 ({{count}})",
     "selectCollections": "选择技能集"
+  },
+  "importCollectionPicker": {
+    "title": "选择目标技能集",
+    "desc": "选择要将技能导入到的技能集，或创建一个新技能集。",
+    "selectCollection": "选择技能集",
+    "defaultHint": "未选择时将使用默认集合",
+    "createNew": "新建技能集",
+    "backToSelect": "返回选择列表",
+    "useDefault": "使用默认集合"
   },
   "skillPicker": {
     "title": "添加技能",

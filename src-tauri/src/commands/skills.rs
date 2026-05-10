@@ -1605,7 +1605,7 @@ mod tests {
         set_agent_dir(&pool, "central", &central_dir).await;
         create_central_skill(&pool, &central_dir, "delete-me").await;
 
-        let collection = db::create_collection(&pool, "Cleanup", None).await.unwrap();
+        let collection = db::create_collection(&pool, "Cleanup", None, false).await.unwrap();
         db::add_skill_to_collection(&pool, &collection.id, "delete-me")
             .await
             .unwrap();
@@ -2162,10 +2162,10 @@ mod tests {
         let skill = make_skill("detail-skill", "Detail Skill", false);
         db::upsert_skill(&pool, &skill).await.unwrap();
 
-        let alpha = db::create_collection(&pool, "Alpha", Some("First collection"))
+        let alpha = db::create_collection(&pool, "Alpha", Some("First collection"), false)
             .await
             .unwrap();
-        let beta = db::create_collection(&pool, "Beta", None).await.unwrap();
+        let beta = db::create_collection(&pool, "Beta", None, false).await.unwrap();
 
         db::add_skill_to_collection(&pool, &alpha.id, "detail-skill")
             .await
@@ -2558,7 +2558,7 @@ mod tests {
         .await
         .unwrap();
 
-        let collection = db::create_collection(&pool, "Alpha", None).await.unwrap();
+        let collection = db::create_collection(&pool, "Alpha", None, false).await.unwrap();
         db::add_skill_to_collection(&pool, &collection.id, "shared-skill")
             .await
             .unwrap();
@@ -2652,7 +2652,7 @@ mod tests {
         .await
         .unwrap();
 
-        let collection = db::create_collection(&pool, "Alpha", None).await.unwrap();
+        let collection = db::create_collection(&pool, "Alpha", None, false).await.unwrap();
         db::add_skill_to_collection(&pool, &collection.id, "shared-skill")
             .await
             .unwrap();

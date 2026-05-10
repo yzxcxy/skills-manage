@@ -232,15 +232,15 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /Cursor/ })).toBeInTheDocument();
   });
 
-  it("renders Central Skills icon button", () => {
+  it("renders Central Skills Warehouse icon button", () => {
     renderSidebar();
-    expect(screen.getByRole("button", { name: /中央技能库/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /中央技能仓库/ })).toBeInTheDocument();
   });
 
-  it("renders Collections icon button", () => {
+  it("renders Central Skills Warehouse icon button only once", () => {
     renderSidebar();
-    // Use exact string match to avoid also matching "导入技能集"
-    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
+    const buttons = screen.getAllByRole("button", { name: /中央技能仓库/ });
+    expect(buttons.length).toBe(1);
   });
 
   it("new/import collection buttons are on the list page, not sidebar", () => {
@@ -303,7 +303,7 @@ describe("Sidebar", () => {
 
   it("highlights Central Skills when on /central", () => {
     renderSidebar("/central");
-    const centralButton = screen.getByRole("button", { name: /中央技能库/ });
+    const centralButton = screen.getByRole("button", { name: /中央技能仓库/ });
     expect(centralButton.className).toContain("bg-hover-bg");
   });
 
@@ -385,14 +385,14 @@ describe("Sidebar", () => {
 
   it("Central Skills button is clickable", () => {
     renderSidebar();
-    const centralButton = screen.getByRole("button", { name: /中央技能库/ });
+    const centralButton = screen.getByRole("button", { name: /中央技能仓库/ });
     expect(centralButton).not.toBeDisabled();
     fireEvent.click(centralButton);
   });
 
-  // ── Collections ───────────────────────────────────────────────────────────
+  // ── Central Skills Warehouse (merged central + collections) ───────────────
 
-  it("collections button navigates to /collections list page", () => {
+  it("central skills warehouse button is present", () => {
     vi.mocked(useCollectionStore).mockImplementation((selector) =>
       selector({
         ...defaultCollectionState,
@@ -403,10 +403,10 @@ describe("Sidebar", () => {
       })
     );
     renderSidebar();
-    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "中央技能仓库" })).toBeInTheDocument();
   });
 
-  it("highlights active collection route", () => {
+  it("highlights active central route", () => {
     vi.mocked(useCollectionStore).mockImplementation((selector) =>
       selector({
         ...defaultCollectionState,
@@ -417,13 +417,31 @@ describe("Sidebar", () => {
     );
     vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
     render(
-      <MemoryRouter initialEntries={["/collections"]}>
+      <MemoryRouter initialEntries={["/central"]}>
         <Sidebar />
       </MemoryRouter>
     );
-    // The collections icon button should be highlighted (exact match)
-    const colButton = screen.getByRole("button", { name: "技能集合" });
-    expect(colButton.className).toContain("bg-hover-bg");
+    const centralButton = screen.getByRole("button", { name: "中央技能仓库" });
+    expect(centralButton.className).toContain("bg-hover-bg");
+  });
+
+  it("highlights active collection detail route", () => {
+    vi.mocked(useCollectionStore).mockImplementation((selector) =>
+      selector({
+        ...defaultCollectionState,
+        collections: [
+          { id: "col-1", name: "Frontend", created_at: "2026-04-09T00:00:00Z", updated_at: "2026-04-09T00:00:00Z" },
+        ],
+      })
+    );
+    vi.mocked(usePlatformStore).mockReturnValue(defaultStoreState);
+    render(
+      <MemoryRouter initialEntries={["/collection/col-1"]}>
+        <Sidebar />
+      </MemoryRouter>
+    );
+    const centralButton = screen.getByRole("button", { name: "中央技能仓库" });
+    expect(centralButton.className).toContain("bg-hover-bg");
   });
 
   // ── Discover ─────────────────────────────────────────────────────────────

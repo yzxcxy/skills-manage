@@ -1495,6 +1495,7 @@ async fn get_discovered_skills_impl(
 pub async fn import_discovered_skill_to_central(
     state: State<'_, AppState>,
     discovered_skill_id: String,
+    collection_id: Option<String>,
 ) -> Result<ImportResult, String> {
     let pool = &state.db;
 
@@ -1546,6 +1547,14 @@ pub async fn import_discovered_skill_to_central(
         };
         db::upsert_skill(pool, &db_skill).await?;
     }
+
+    // Associate with collection (provided or default).
+    let target_collection_id = if let Some(cid) = collection_id {
+        cid
+    } else {
+        db::ensure_default_collection(pool).await?.id
+    };
+    let _ = db::add_skill_to_collection(pool, &target_collection_id, &skill_dir_name).await;
 
     // Remove the discovered skill record since it's now centralized.
     db::delete_discovered_skill(pool, &discovered_skill_id).await?;

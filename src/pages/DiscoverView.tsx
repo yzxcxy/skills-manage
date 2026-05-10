@@ -19,8 +19,13 @@ import { DiscoverConfigDialog } from "@/components/discover/DiscoverConfigDialog
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { InstallDialog } from "@/components/central/InstallDialog";
+import {
+  ImportCollectionPickerDialog,
+  ImportCollectionChoice,
+} from "@/components/collection/ImportCollectionPickerDialog";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useCollectionStore } from "@/stores/collectionStore";
 import { DiscoveredSkill, SkillWithLinks } from "@/types";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -126,6 +131,8 @@ export function DiscoverView() {
   const [installTargetSkill, setInstallTargetSkill] =
     useState<DiscoveredSkill | null>(null);
   const [isInstallDialogOpen, setIsInstallDialogOpen] = useState(false);
+  const [isCollectionPickerOpen, setIsCollectionPickerOpen] = useState(false);
+  const [pendingImportSkillIds, setPendingImportSkillIds] = useState<string[]>([]);
   const [drawerSkillId, setDrawerSkillId] = useState<string | null>(null);
   const [drawerFilePath, setDrawerFilePath] = useState<string | null>(null);
   const [drawerDiscoverMeta, setDrawerDiscoverMeta] = useState<{
@@ -289,10 +296,10 @@ export function DiscoverView() {
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const handleInstallToCentral = useCallback(
-    async (skillId: string) => {
+    async (skillId: string, collectionId?: string) => {
       setImportingIds((prev) => new Set(prev).add(skillId));
       try {
-        await importToCentral(skillId);
+        await importToCentral(skillId, collectionId);
         await Promise.all([refreshCounts(), refreshDiscoverCounts()]);
         toast.success(t("discover.importSuccess"));
       } catch (err) {
@@ -313,12 +320,43 @@ export function DiscoverView() {
     setIsInstallDialogOpen(true);
   }, []);
 
+  const handleOpenCollectionPicker = useCallback((skillIds: string[]) => {
+    setPendingImportSkillIds(skillIds);
+    setIsCollectionPickerOpen(true);
+  }, []);
+
+  const handleCollectionPickerConfirm = useCallback(
+    async (choice: ImportCollectionChoice) => {
+      setIsCollectionPickerOpen(false);
+      const ids = pendingImportSkillIds;
+      setPendingImportSkillIds([]);
+
+      let targetCollectionId: string | undefined;
+      if (choice.type === "existing" && choice.collectionId) {
+        targetCollectionId = choice.collectionId;
+      } else if (choice.type === "new" && choice.collectionName) {
+        // Create new collection first.
+        try {
+          const { createCollection } = useCollectionStore.getState();
+          const newCol = await createCollection(choice.collectionName);
+          targetCollectionId = newCol.id;
+        } catch (err) {
+          toast.error(String(err));
+          return;
+        }
+      }
+
+      for (const skillId of ids) {
+        await handleInstallToCentral(skillId, targetCollectionId);
+      }
+    },
+    [pendingImportSkillIds, handleInstallToCentral]
+  );
+
   const handleBatchInstallCentral = useCallback(async () => {
     const ids = Array.from(selectedSkillIds);
-    for (const id of ids) {
-      await handleInstallToCentral(id);
-    }
-  }, [selectedSkillIds, handleInstallToCentral]);
+    handleOpenCollectionPicker(ids);
+  }, [selectedSkillIds, handleOpenCollectionPicker]);
 
   const handleInstallFromDialog = useCallback(
     async (_skillId: string, agentIds: string[], method: "symlink" | "copy") => {
@@ -650,7 +688,7 @@ export function DiscoverView() {
                             : skill.id,
                           node,
                         )}
-                        onInstallToCentral={() => handleInstallToCentral(skill.id)}
+                        onInstallToCentral={() => handleOpenCollectionPicker([skill.id])}
                         onInstallToPlatform={() => handleInstallToPlatform(skill)}
                         isLoading={importingIds.has(skill.id)}
                         className="h-[120px]"
@@ -682,7 +720,7 @@ export function DiscoverView() {
                             : skill.id,
                           node,
                         )}
-                        onInstallToCentral={() => handleInstallToCentral(skill.id)}
+                        onInstallToCentral={() => handleOpenCollectionPicker([skill.id])}
                         onInstallToPlatform={() => handleInstallToPlatform(skill)}
                         isLoading={importingIds.has(skill.id)}
                       />
@@ -774,6 +812,12 @@ export function DiscoverView() {
               }
             : undefined
         }
+      />
+
+      <ImportCollectionPickerDialog
+        open={isCollectionPickerOpen}
+        onOpenChange={setIsCollectionPickerOpen}
+        onConfirm={handleCollectionPickerConfirm}
       />
     </div>
   );

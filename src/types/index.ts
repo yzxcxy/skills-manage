@@ -186,6 +186,8 @@ export interface Collection {
   description?: string;
   created_at: string;
   updated_at: string;
+  is_default?: boolean;
+  skill_count?: number;
 }
 
 export interface CollectionWithSkills extends Collection {

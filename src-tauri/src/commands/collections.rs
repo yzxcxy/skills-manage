@@ -47,11 +47,11 @@ pub async fn create_collection_impl(
     if name.trim().is_empty() {
         return Err("Collection name cannot be empty".to_string());
     }
-    db::create_collection(pool, name, description).await
+    db::create_collection(pool, name, description, false).await
 }
 
 /// Return all collections.
-pub async fn get_collections_impl(pool: &DbPool) -> Result<Vec<Collection>, String> {
+pub async fn get_collections_impl(pool: &DbPool) -> Result<Vec<serde_json::Value>, String> {
     db::get_all_collections(pool).await
 }
 
@@ -107,9 +107,13 @@ pub async fn remove_skill_from_collection_impl(
 /// Delete a collection and all its skill memberships.
 pub async fn delete_collection_impl(pool: &DbPool, collection_id: &str) -> Result<(), String> {
     // Verify the collection exists before trying to delete it.
-    db::get_collection_by_id(pool, collection_id)
+    let collection = db::get_collection_by_id(pool, collection_id)
         .await?
         .ok_or_else(|| format!("Collection '{}' not found", collection_id))?;
+
+    if collection.is_default {
+        return Err("默认集合不可删除".to_string());
+    }
 
     db::delete_collection(pool, collection_id).await
 }
@@ -349,7 +353,7 @@ pub async fn import_collection_impl(pool: &DbPool, json: &str) -> Result<Collect
 
     // Create the collection.
     let collection =
-        db::create_collection(pool, &export.name, export.description.as_deref()).await?;
+        db::create_collection(pool, &export.name, export.description.as_deref(), false).await?;
 
     // Link skills that exist in the local database.
     for skill_id in &export.skills {
@@ -376,7 +380,7 @@ pub async fn create_collection(
 
 /// Tauri command: return all collections.
 #[tauri::command]
-pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<Collection>, String> {
+pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     get_collections_impl(&state.db).await
 }
 
@@ -557,7 +561,7 @@ mod tests {
 
         let all = get_collections_impl(&pool).await.unwrap();
         assert_eq!(all.len(), 2, "should return both collections");
-        let names: Vec<&str> = all.iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = all.iter().map(|c| c["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"Col A"));
         assert!(names.contains(&"Col B"));
     }

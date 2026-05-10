@@ -76,7 +76,7 @@ interface DiscoverState {
   loadDiscoveredSkills: () => Promise<void>;
   refreshCounts: () => Promise<void>;
   rescanFromDisk: () => Promise<void>;
-  importToCentral: (skillId: string) => Promise<DiscoverImportResult>;
+  importToCentral: (skillId: string, collectionId?: string) => Promise<DiscoverImportResult>;
   importToPlatform: (
     skillId: string,
     agentId: string,
@@ -357,12 +357,12 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
 
   // ── Import ─────────────────────────────────────────────────────────────────
 
-  importToCentral: async (skillId: string) => {
+  importToCentral: async (skillId: string, collectionId?: string) => {
     set({ error: null });
     try {
       const result = await invoke<DiscoverImportResult>(
         "import_discovered_skill_to_central",
-        { discoveredSkillId: skillId }
+        { discoveredSkillId: skillId, collectionId: collectionId ?? null }
       );
       // Remove the skill from discovered results.
       set((state) => {

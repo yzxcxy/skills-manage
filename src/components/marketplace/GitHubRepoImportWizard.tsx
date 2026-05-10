@@ -34,6 +34,10 @@ import {
 import { isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { InstallDialog } from "@/components/central/InstallDialog";
+import {
+  ImportCollectionPickerDialog,
+  ImportCollectionChoice,
+} from "@/components/collection/ImportCollectionPickerDialog";
 import { MarkdownPreview } from "@/components/marketplace/MarkdownPreview";
 import {
   useMarketplaceStore,
@@ -77,6 +81,8 @@ interface GitHubRepoImportWizardProps {
   onPreview: () => Promise<GitHubRepoPreview | null> | GitHubRepoPreview | null;
   onImport: (
     selections: GitHubSkillImportSelection[],
+    collectionId?: string,
+    collectionName?: string,
   ) => Promise<GitHubRepoImportResult | void> | GitHubRepoImportResult | void;
   onReset: () => void;
   launcherLabel: string;
@@ -157,6 +163,7 @@ export function GitHubRepoImportWizard({
   );
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   const [isRenameEditing, setIsRenameEditing] = useState(false);
+  const [isCollectionPickerOpen, setIsCollectionPickerOpen] = useState(false);
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const browserMode = !isTauriRuntime();
@@ -543,7 +550,26 @@ export function GitHubRepoImportWizard({
   }
 
   async function handleImportConfirmClick() {
-    const result = await onImport(selectedImportPayload);
+    setIsCollectionPickerOpen(true);
+  }
+
+  async function handleCollectionPickerConfirm(choice: ImportCollectionChoice) {
+    setIsCollectionPickerOpen(false);
+
+    let targetCollectionId: string | undefined;
+    let targetCollectionName: string | undefined;
+
+    if (choice.type === "existing" && choice.collectionId) {
+      targetCollectionId = choice.collectionId;
+    } else if (choice.type === "new" && choice.collectionName) {
+      targetCollectionName = choice.collectionName;
+    }
+
+    const result = await onImport(
+      selectedImportPayload,
+      targetCollectionId,
+      targetCollectionName,
+    );
     if (result) {
       await onAfterImportSuccess?.(result);
     } else if (importResult) {
@@ -1907,6 +1933,17 @@ export function GitHubRepoImportWizard({
         skill={postImportSkill}
         agents={availableAgents}
         onInstall={handleInstallDialogConfirm}
+      />
+
+      <ImportCollectionPickerDialog
+        open={isCollectionPickerOpen}
+        onOpenChange={setIsCollectionPickerOpen}
+        onConfirm={handleCollectionPickerConfirm}
+        defaultNewName={
+          preview
+            ? `${preview.repo.owner}/${preview.repo.repo}`
+            : undefined
+        }
       />
     </Dialog>
   );

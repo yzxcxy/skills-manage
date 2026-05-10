@@ -257,8 +257,10 @@ pub async fn import_github_repo_skills(
     state: State<'_, AppState>,
     repo_url: String,
     selections: Vec<GitHubSkillImportSelection>,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
 ) -> Result<GitHubRepoImportResult, String> {
-    import_github_repo_skills_impl(&state.db, &repo_url, selections, Some(&app)).await
+    import_github_repo_skills_impl(&state.db, &repo_url, selections, Some(&app), collection_id, collection_name).await
 }
 
 #[tauri::command]
@@ -295,6 +297,8 @@ async fn import_github_repo_skills_impl(
     repo_url: &str,
     selections: Vec<GitHubSkillImportSelection>,
     app: Option<&AppHandle>,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
 ) -> Result<GitHubRepoImportResult, String> {
     emit_github_import_progress(
         app,
@@ -527,11 +531,22 @@ async fn import_github_repo_skills_impl(
         },
     );
 
-    // Auto-create a collection grouping all imported skills from this repo.
-    let (collection_id, collection_name) = if imported_skills.is_empty() {
+    // Associate imported skills with a collection.
+    let (result_collection_id, result_collection_name) = if imported_skills.is_empty() {
         (None, None)
+    } else if let Some(cid) = collection_id {
+        // Use existing collection.
+        if let Ok(Some(collection)) = db::get_collection_by_id(pool, &cid).await {
+            for skill in &imported_skills {
+                let _ = add_skill_to_collection_impl(pool, &cid, &skill.imported_skill_id).await;
+            }
+            (Some(cid), Some(collection.name))
+        } else {
+            eprintln!("[github_import] Specified collection '{}' not found", cid);
+            (None, None)
+        }
     } else {
-        let col_name = format!("{}/{}", repo.owner, repo.repo);
+        let col_name = collection_name.unwrap_or_else(|| format!("{}/{}", repo.owner, repo.repo));
         let col_description = Some(format!(
             "Auto-created from GitHub import of {}/{}",
             repo.owner, repo.repo
@@ -555,8 +570,8 @@ async fn import_github_repo_skills_impl(
         repo,
         imported_skills,
         skipped_skills,
-        collection_id,
-        collection_name,
+        collection_id: result_collection_id,
+        collection_name: result_collection_name,
     })
 }
 
@@ -1853,6 +1868,8 @@ mod tests {
                 renamed_skill_id: None,
             }],
             None,
+            None,
+            None,
         )
         .await;
 
@@ -1890,6 +1907,8 @@ mod tests {
                 resolution: DuplicateResolution::Overwrite,
                 renamed_skill_id: None,
             }],
+            None,
+            None,
             None,
         )
         .await;

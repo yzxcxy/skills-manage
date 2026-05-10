@@ -161,7 +161,7 @@ function renderDetail(
       <Routes>
         <Route path="/collection/:collectionId" element={<CollectionDetailView />} />
         <Route path="/skill/:skillId" element={<div>skill-detail</div>} />
-        <Route path="/collections" element={<div>collections-list</div>} />
+        <Route path="/central" element={<div>central-list</div>} />
       </Routes>
     </MemoryRouter>
   );
@@ -217,7 +217,7 @@ describe("CollectionDetailView", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("返回")).toBeInTheDocument();
     });
-    expect(screen.getByText("技能集合")).toBeInTheDocument();
+    expect(screen.getByText("中央技能仓库")).toBeInTheDocument();
   });
 
   it("shows empty state when collection has no skills", async () => {

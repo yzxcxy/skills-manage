@@ -23,7 +23,7 @@
   },
   "sidebar": {
     "byTool": "By Tool",
-    "centralSkills": "Central Skills",
+    "centralSkills": "Central Skills Warehouse",
     "collections": "Collections",
     "settings": "Settings",
     "scanning": "Scanning...",
@@ -35,6 +35,7 @@
     "newCollectionLabel": "New Collection",
     "importCollectionInput": "Import collection JSON file",
     "mainNav": "Main navigation",
+    "allSkills": "All Skills",
     "discovered": "Discovered",
     "rescan": "Re-scan...",
     "categoryLobster": "Lobster",
@@ -86,8 +87,11 @@
     "noSkills": "No matching skills in this folder."
   },
   "central": {
-    "title": "Central Skills",
+    "title": "Central Skills Warehouse",
     "path": "~/.skillsmanage/central/",
+    "allSkills": "All Skills",
+    "allSkillsDesc": "View and manage all skills",
+    "defaultCollection": "Default Collection",
     "searchPlaceholder": "Search central skills...",
     "loading": "Loading skills...",
     "noMatch": "No skills match \"{{query}}\"",
@@ -331,6 +335,15 @@
     "add": "Add",
     "addCount": "Add ({{count}})",
     "selectCollections": "Select collections"
+  },
+  "importCollectionPicker": {
+    "title": "Select Target Collection",
+    "desc": "Choose a collection to import skills into, or create a new one.",
+    "selectCollection": "Select collection",
+    "defaultHint": "Default collection will be used if none selected",
+    "createNew": "Create new collection",
+    "backToSelect": "Back to list",
+    "useDefault": "Use default collection"
   },
   "skillPicker": {
     "title": "Add Skill",
