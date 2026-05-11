@@ -725,8 +725,13 @@ async fn get_skill_detail_with_row_impl(
     row_id: Option<&str>,
 ) -> Result<SkillDetail, String> {
     if let Some(agent_id) = agent_id {
-        if let Some(detail) = get_observation_detail(pool, skill_id, agent_id, row_id).await? {
-            return Ok(detail);
+        // Observation row IDs contain "::" (format: "{agent_id}::{dir_path}").
+        // A plain skill-id row_id means an installation record, not an observation.
+        let looks_like_observation = row_id.is_some_and(|r| r.contains("::"));
+        if looks_like_observation {
+            if let Some(detail) = get_observation_detail(pool, skill_id, agent_id, row_id).await? {
+                return Ok(detail);
+            }
         }
     }
 
