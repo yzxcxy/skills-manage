@@ -552,7 +552,8 @@ pub async fn install_marketplace_skill(
         is_central: true,
         source: Some("marketplace".to_string()),
         content: None,
-        scanned_at: now,
+        scanned_at: now.clone(),
+        remote_url: Some(skill.download_url.clone()),
     };
     crate::db::upsert_skill(&state.db, &db_skill).await?;
 

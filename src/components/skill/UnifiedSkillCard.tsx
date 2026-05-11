@@ -12,6 +12,7 @@ import {
   Loader2,
   Lock,
   Trash2,
+  ArrowDownCircle,
 } from "lucide-react";
 import type { MouseEventHandler, Ref } from "react";
 import { useTranslation } from "react-i18next";
@@ -130,6 +131,11 @@ export interface UnifiedSkillCardProps {
   onRemove?: () => void;
   isLoading?: boolean;
   detailButtonRef?: Ref<HTMLButtonElement>;
+
+  // ── update ──
+  hasUpdate?: boolean;
+  onUpdate?: () => void;
+  isUpdating?: boolean;
 }
 
 // ─── UnifiedSkillCard ─────────────────────────────────────────────────────────
@@ -165,6 +171,9 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onRemove,
     isLoading,
     detailButtonRef,
+    hasUpdate,
+    onUpdate,
+    isUpdating,
   } = props;
 
   // Determine variant features
@@ -248,18 +257,28 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           {/* Row 1: Name + icon actions */}
           <div className="flex items-center justify-between gap-2">
             {/* Skill name — clickable if onDetail provided */}
-            {onDetail ? (
-              <button
-                ref={detailButtonRef}
-                className="font-medium text-sm text-foreground truncate hover:text-primary hover:underline text-left min-w-0 flex-1"
-                onClick={onDetail}
-                aria-label={t("central.viewDetailsLabel", { name })}
-              >
-                {name}
-              </button>
-            ) : (
-              <h3 className="text-sm font-medium truncate min-w-0 flex-1">{name}</h3>
-            )}
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              {onDetail ? (
+                <button
+                  ref={detailButtonRef}
+                  className="font-medium text-sm text-foreground truncate hover:text-primary hover:underline text-left"
+                  onClick={onDetail}
+                  aria-label={t("central.viewDetailsLabel", { name })}
+                >
+                  {name}
+                </button>
+              ) : (
+                <h3 className="text-sm font-medium truncate">{name}</h3>
+              )}
+              {hasUpdate && (
+                <span
+                  className="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-300"
+                  title={t("skillUpdate.updateAvailable")}
+                >
+                  {t("skillUpdate.updateAvailable")}
+                </span>
+              )}
+            </div>
 
             {/* Icon action buttons */}
             {hasActions && (
@@ -358,6 +377,19 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     confirmLabel={t("common.confirmDelete")}
                     icon={<X className="size-4" />}
                   />
+                )}
+
+                {/* Update (central skills with remote source) */}
+                {onUpdate && (
+                  <button
+                    onClick={onUpdate}
+                    disabled={isUpdating}
+                    title={t("skillUpdate.update")}
+                    aria-label={t("skillUpdate.updateLabel", { name })}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 disabled:opacity-50 disabled:cursor-default"
+                  >
+                    {isUpdating ? <Loader2 className="size-4 animate-spin" /> : <ArrowDownCircle className="size-4" />}
+                  </button>
                 )}
               </div>
             )}

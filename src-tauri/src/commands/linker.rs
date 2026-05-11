@@ -752,6 +752,7 @@ mod tests {
                 canonical_path: Some(nested_skill_dir.to_string_lossy().into_owned()),
                 is_central: true,
                 source: Some("native".to_string()),
+                remote_url: None,
                 content: None,
                 scanned_at: chrono::Utc::now().to_rfc3339(),
             },

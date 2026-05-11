@@ -33,7 +33,7 @@ export interface ScanResult {
   skills_by_agent: Record<string, number>;
 }
 
-export type ClaudeSourceKind = "user" | "plugin" | "system";
+export type ClaudeSourceKind = "user" | "plugin" | "system" | "compatibility";
 
 export interface ScannedSkill {
   id: string;
@@ -66,6 +66,8 @@ export interface Skill {
   source?: string;
   content?: string;
   scanned_at: string;
+  /** Remote URL where this skill was originally downloaded from. */
+  remote_url?: string | null;
 }
 
 export interface SkillInstallation {
@@ -91,6 +93,8 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   installations: SkillInstallation[];
   /** Collections this skill currently belongs to. */
   collections?: Collection[];
+  /** Remote URL where this skill was originally downloaded from. */
+  remote_url?: string | null;
 }
 
 export interface SkillDirectoryNode {
@@ -123,6 +127,8 @@ export interface SkillWithLinks {
   linked_agents: string[];
   /** Agent IDs that can see this skill through a read-only compatibility root. */
   read_only_agents?: string[];
+  /** Remote URL where this skill was originally downloaded from. */
+  remote_url?: string | null;
 }
 
 export interface BatchInstallResult {
@@ -382,6 +388,16 @@ export interface GitHubImportProgressPayload {
   totalFiles: number;
   completedBytes: number;
   totalBytes: number;
+}
+
+// ─── Skill Update Types ───────────────────────────────────────────────────────
+
+export interface SkillUpdateInfo {
+  skillId: string;
+  skillName: string;
+  hasUpdate: boolean;
+  remoteUrl: string;
+  error?: string | null;
 }
 
 // ─── Updater Types ────────────────────────────────────────────────────────────

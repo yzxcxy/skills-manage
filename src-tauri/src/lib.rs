@@ -116,6 +116,9 @@ pub fn run() {
             commands::marketplace::get_skill_explanation,
             commands::marketplace::explain_skill_stream,
             commands::marketplace::refresh_skill_explanation,
+            // Skill Updates
+            commands::skill_updates::check_skill_updates,
+            commands::skill_updates::update_skill,
             // Updater
             commands::updater::check_update,
             commands::updater::get_app_version,

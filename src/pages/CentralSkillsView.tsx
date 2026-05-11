@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowDownCircle,
   FileInput,
   GitBranch,
   Layers,
@@ -16,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
+import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { Collection, CollectionBatchInstallResult } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,11 +44,13 @@ function EmptyState({ message }: { message: string }) {
 
 function CollectionCard({
   collection,
+  updateCount,
   onNavigate,
   onInstall,
   onUninstall,
 }: {
   collection: Collection;
+  updateCount: number;
   onNavigate: () => void;
   onInstall: (e: React.MouseEvent) => void;
   onUninstall: (e: React.MouseEvent) => void;
@@ -73,6 +77,11 @@ function CollectionCard({
             </h3>
             <p className="text-xs text-muted-foreground">
               {t("collection.skills", { count: skillCount })}
+              {updateCount > 0 && (
+                <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-300">
+                  {t("skillUpdate.updateAvailableShort", { count: updateCount })}
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -133,6 +142,12 @@ export function CentralSkillsView() {
   const agents = usePlatformStore((s) => s.agents);
   const refreshCounts = usePlatformStore((s) => s.refreshCounts);
 
+  const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
+  const centralSkills = useCentralSkillsStore((s) => s.skills);
+  const updateStatus = useCentralSkillsStore((s) => s.updateStatus);
+  const isCheckingUpdates = useCentralSkillsStore((s) => s.isCheckingUpdates);
+  const checkUpdates = useCentralSkillsStore((s) => s.checkUpdates);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -157,7 +172,8 @@ export function CentralSkillsView() {
 
   useEffect(() => {
     loadCollections();
-  }, [loadCollections]);
+    loadCentralSkills();
+  }, [loadCollections, loadCentralSkills]);
 
   const filteredCollections = useMemo(() => {
     if (!searchQuery.trim()) return collections;
@@ -185,6 +201,20 @@ export function CentralSkillsView() {
 
   async function handleRefresh() {
     await loadCollections();
+  }
+
+  async function handleCheckAllUpdates() {
+    try {
+      await checkUpdates();
+      const hasUpdates = Object.values(updateStatus).filter(Boolean).length;
+      if (hasUpdates > 0) {
+        toast.success(t("skillUpdate.foundUpdates", { count: hasUpdates }));
+      } else {
+        toast.info(t("skillUpdate.noUpdates"));
+      }
+    } catch (err) {
+      toast.error(t("skillUpdate.checkError", { error: String(err) }));
+    }
   }
 
   function handleOpenInstall(collection: Collection) {
@@ -276,6 +306,15 @@ export function CentralSkillsView() {
             <Button
               variant="outline"
               size="sm"
+              onClick={handleCheckAllUpdates}
+              disabled={isCheckingUpdates}
+            >
+              <ArrowDownCircle className={`size-3.5 ${isCheckingUpdates ? "animate-spin" : ""}`} />
+              <span>{t("skillUpdate.checkAllUpdates")}</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setIsGitHubImportOpen(true)}
             >
               <GitBranch className="size-3.5" />
@@ -334,21 +373,28 @@ export function CentralSkillsView() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredCollections.map((col) => (
-              <CollectionCard
-                key={col.id}
-                collection={col}
-                onNavigate={() => navigate(`/collection/${col.id}`)}
-                onInstall={(e) => {
-                  e.stopPropagation();
-                  handleOpenInstall(col);
-                }}
-                onUninstall={(e) => {
-                  e.stopPropagation();
-                  handleOpenUninstall(col);
-                }}
-              />
-            ))}
+            {filteredCollections.map((col) => {
+              const updateCount = centralSkills.filter(
+                (s) =>
+                  s.collection_id === col.id && updateStatus[s.id]
+              ).length;
+              return (
+                <CollectionCard
+                  key={col.id}
+                  collection={col}
+                  updateCount={updateCount}
+                  onNavigate={() => navigate(`/collection/${col.id}`)}
+                  onInstall={(e) => {
+                    e.stopPropagation();
+                    handleOpenInstall(col);
+                  }}
+                  onUninstall={(e) => {
+                    e.stopPropagation();
+                    handleOpenUninstall(col);
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </div>

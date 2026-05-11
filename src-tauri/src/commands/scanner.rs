@@ -730,6 +730,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                         source: Some(skill.link_type.clone()),
                         content: None,
                         scanned_at: now.clone(),
+                        remote_url: None,
                     };
                     db::upsert_skill(pool, &db_skill).await?;
 
@@ -786,6 +787,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 source: Some(skill.link_type.clone()),
                 content: None,
                 scanned_at: now,
+                remote_url: None,
             };
             db::upsert_skill(pool, &db_skill).await?;
         }

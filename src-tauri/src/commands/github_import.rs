@@ -525,6 +525,7 @@ async fn import_github_repo_skills_impl(
             source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: Some(op.candidate.download_url.clone()),
         };
         db::upsert_skill(pool, &db_skill).await?;
 
@@ -1703,6 +1704,7 @@ mod tests {
                 source: Some("local".to_string()),
                 content: None,
                 scanned_at: Utc::now().to_rfc3339(),
+                remote_url: None,
             },
         )
         .await
@@ -1779,6 +1781,7 @@ mod tests {
                 source: Some("local".to_string()),
                 content: None,
                 scanned_at: Utc::now().to_rfc3339(),
+                remote_url: None,
             },
         )
         .await
@@ -1796,6 +1799,7 @@ mod tests {
                 source: Some("local".to_string()),
                 content: None,
                 scanned_at: Utc::now().to_rfc3339(),
+                remote_url: None,
             },
         )
         .await
@@ -1813,6 +1817,7 @@ mod tests {
                 source: Some("local".to_string()),
                 content: None,
                 scanned_at: Utc::now().to_rfc3339(),
+                remote_url: None,
             },
         )
         .await

@@ -147,6 +147,19 @@
     "sortByNewest": "Newest",
     "sortByOldest": "Oldest"
   },
+  "skillUpdate": {
+    "checkUpdates": "Check updates",
+    "checkAllUpdates": "Check all updates",
+    "updateAvailable": "Update available",
+    "updateAvailableShort": "{{count}} updates",
+    "update": "Update",
+    "updateLabel": "Update skill {{name}}",
+    "updateSuccess": "{{name}} updated",
+    "updateError": "Update failed: {{error}}",
+    "foundUpdates": "Found {{count}} skill(s) with updates",
+    "noUpdates": "All skills are up to date",
+    "checkError": "Check updates failed: {{error}}"
+  },
   "centralBundleDrawer": {
     "titleFallback": "Bundle detail",
     "loading": "Loading bundle detail...",

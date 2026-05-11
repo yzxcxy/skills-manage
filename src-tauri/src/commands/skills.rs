@@ -31,6 +31,8 @@ pub struct SkillWithLinks {
     pub linked_agents: Vec<String>,
     /// Agent IDs that observe this skill from a shared/read-only compatibility root.
     pub read_only_agents: Vec<String>,
+    /// Remote URL where this skill was originally downloaded from.
+    pub remote_url: Option<String>,
 }
 
 /// An installation record enriched with the `installed_at` timestamp for
@@ -72,6 +74,8 @@ pub struct SkillDetail {
     pub installations: Vec<SkillInstallationDetail>,
     /// Collections this skill currently belongs to.
     pub collections: Vec<Collection>,
+    /// Remote URL where this skill was originally downloaded from.
+    pub remote_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -715,6 +719,7 @@ async fn get_observation_detail(
         read_only_agents: Vec::new(),
         installations,
         collections,
+        remote_url: manageable_skill.as_ref().and_then(|s| s.remote_url.clone()),
     }))
 }
 
@@ -764,6 +769,7 @@ async fn get_skill_detail_with_row_impl(
         read_only_agents,
         installations,
         collections,
+        remote_url: skill.remote_url,
     })
 }
 
@@ -808,6 +814,7 @@ async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLi
         updated_at,
         linked_agents,
         read_only_agents,
+        remote_url: skill.remote_url,
     })
 }
 
@@ -1282,7 +1289,8 @@ mod tests {
                 Some("copy".to_string())
             },
             content: None,
-            scanned_at: Utc::now().to_rfc3339(),
+            scanned_at: "2024-01-01T00:00:00Z".to_string(),
+            remote_url: None,
         }
     }
 
@@ -1373,6 +1381,7 @@ mod tests {
             source: Some("native".to_string()),
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: None,
         };
         db::upsert_skill(pool, &skill).await.unwrap();
         skill
@@ -1404,6 +1413,7 @@ mod tests {
             source: Some("native".to_string()),
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: None,
         };
         db::upsert_skill(pool, &skill).await.unwrap();
         skill
@@ -2169,6 +2179,7 @@ mod tests {
             source: None,
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: None,
         };
         db::upsert_skill(&pool, &skill).await.unwrap();
 
@@ -2192,6 +2203,7 @@ mod tests {
             source: None,
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: None,
         };
         db::upsert_skill(&pool, &skill).await.unwrap();
 
@@ -2224,6 +2236,7 @@ mod tests {
                 updated_at,
                 linked_agents,
                 read_only_agents,
+                remote_url: skill.remote_url,
             });
         }
         Ok(result)

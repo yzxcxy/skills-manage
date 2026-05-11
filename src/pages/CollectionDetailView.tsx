@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Loader2,
   BookOpen,
+  RefreshCw,
 } from "lucide-react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -51,6 +52,11 @@ export function CollectionDetailView() {
   const centralAgents = useCentralSkillsStore((s) => s.agents);
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const installCentralSkill = useCentralSkillsStore((s) => s.installSkill);
+  const updateStatus = useCentralSkillsStore((s) => s.updateStatus);
+  const updatingSkillId = useCentralSkillsStore((s) => s.updatingSkillId);
+  const updateSkill = useCentralSkillsStore((s) => s.updateSkill);
+  const checkUpdates = useCentralSkillsStore((s) => s.checkUpdates);
+  const isCheckingUpdates = useCentralSkillsStore((s) => s.isCheckingUpdates);
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -286,6 +292,15 @@ export function CollectionDetailView() {
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={() => checkUpdates(currentDetail.skills.map((s) => s.id))}
+                  disabled={currentDetail.skills.length === 0 || isCheckingUpdates}
+                >
+                  <RefreshCw className={`size-3.5 ${isCheckingUpdates ? "animate-spin" : ""}`} />
+                  <span>{t("skillUpdate.checkUpdates")}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setIsInstallOpen(true)}
                   disabled={currentDetail.skills.length === 0}
                 >
@@ -342,6 +357,9 @@ export function CollectionDetailView() {
                       onDetail={() => handleSkillClick(skill.id)}
                       onInstallTo={() => handleInstallSingleSkillClick(skill.id)}
                       onRemove={() => handleRemoveSkill(skill.id)}
+                      hasUpdate={updateStatus[skill.id] ?? false}
+                      onUpdate={skill.remote_url ? () => updateSkill(skill.id) : undefined}
+                      isUpdating={updatingSkillId === skill.id}
                     />
                   ))}
                 </div>

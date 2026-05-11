@@ -10,6 +10,7 @@ import {
   DeleteCentralSkillBundleOptions,
   DeleteCentralSkillBundleResult,
   DeleteCentralSkillResult,
+  SkillUpdateInfo,
   SkillWithLinks,
 } from "@/types";
 
@@ -57,6 +58,7 @@ export const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     updated_at: "2026-04-17T00:00:00.000Z",
     linked_agents: ["claude-code"],
     read_only_agents: [],
+    remote_url: null,
   },
 ];
 
@@ -79,6 +81,10 @@ interface CentralSkillsState {
   /** Agent ID currently being toggled (null = idle). */
   togglingAgentId: string | null;
   error: string | null;
+  /** Map of skill_id -> has_update for skills with remote sources. */
+  updateStatus: Record<string, boolean>;
+  isCheckingUpdates: boolean;
+  updatingSkillId: string | null;
 
   // Actions
   loadCentralSkills: () => Promise<void>;
@@ -103,6 +109,8 @@ interface CentralSkillsState {
   ) => Promise<DeleteCentralSkillBundleResult>;
   clearBundleDeletePreview: () => void;
   togglePlatformLink: (skillId: string, agentId: string) => Promise<void>;
+  checkUpdates: (skillIds?: string[]) => Promise<void>;
+  updateSkill: (skillId: string) => Promise<void>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -121,6 +129,9 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   deletingBundlePath: null,
   togglingAgentId: null,
   error: null,
+  updateStatus: {},
+  isCheckingUpdates: false,
+  updatingSkillId: null,
 
   /**
    * Load all Central Skills with per-platform link status, along with the
@@ -365,6 +376,46 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       set({ skills, togglingAgentId: null });
     } catch (err) {
       set({ error: String(err), togglingAgentId: null });
+      throw err;
+    }
+  },
+
+  /**
+   * Check whether one or more skills have updates available.
+   * If no skillIds are provided, checks all skills with a remote_url.
+   */
+  checkUpdates: async (skillIds) => {
+    set({ isCheckingUpdates: true, error: null });
+    try {
+      const results = await invoke<SkillUpdateInfo[]>("check_skill_updates", {
+        skillIds: skillIds ?? null,
+      });
+      const status: Record<string, boolean> = {};
+      for (const r of results) {
+        status[r.skillId] = r.hasUpdate;
+      }
+      set({ updateStatus: status, isCheckingUpdates: false });
+    } catch (err) {
+      set({ error: String(err), isCheckingUpdates: false });
+    }
+  },
+
+  /**
+   * Update a single skill by re-downloading its remote content.
+   */
+  updateSkill: async (skillId) => {
+    set({ updatingSkillId: skillId, error: null });
+    try {
+      await invoke("update_skill", { skillId });
+      // Refresh skills and clear update status for this skill.
+      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      set((state) => ({
+        skills,
+        updatingSkillId: null,
+        updateStatus: { ...state.updateStatus, [skillId]: false },
+      }));
+    } catch (err) {
+      set({ error: String(err), updatingSkillId: null });
       throw err;
     }
   },

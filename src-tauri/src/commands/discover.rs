@@ -1554,6 +1554,7 @@ pub async fn import_discovered_skill_to_central(
             source: Some("copy".to_string()),
             content: None,
             scanned_at: now,
+            remote_url: None,
         };
         db::upsert_skill(pool, &db_skill).await?;
     }
@@ -1668,6 +1669,7 @@ async fn import_discovered_skill_to_platform_from_pool(
             source: Some(install_method.as_str().to_string()),
             content: None,
             scanned_at: now.clone(),
+            remote_url: None,
         };
         db::upsert_skill(pool, &db_skill).await?;
     }
@@ -2908,6 +2910,7 @@ mod tests {
                 source: Some("copy".to_string()),
                 content: None,
                 scanned_at: now,
+                remote_url: None,
             };
             db::upsert_skill(pool, &db_skill).await?;
         }
@@ -3421,6 +3424,7 @@ mod tests {
                 source: Some("symlink".to_string()),
                 content: None,
                 scanned_at: now.clone(),
+                remote_url: None,
             };
             db::upsert_skill(pool, &db_skill).await?;
         }

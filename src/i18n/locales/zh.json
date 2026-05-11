@@ -147,6 +147,19 @@
     "sortByNewest": "最新",
     "sortByOldest": "最早"
   },
+  "skillUpdate": {
+    "checkUpdates": "检查更新",
+    "checkAllUpdates": "检查所有更新",
+    "updateAvailable": "有更新",
+    "updateAvailableShort": "{{count}} 个更新",
+    "update": "更新",
+    "updateLabel": "更新技能 {{name}}",
+    "updateSuccess": "{{name}} 已更新",
+    "updateError": "更新失败: {{error}}",
+    "foundUpdates": "发现 {{count}} 个技能有更新",
+    "noUpdates": "所有技能已是最新",
+    "checkError": "检查更新失败: {{error}}"
+  },
   "centralBundleDrawer": {
     "titleFallback": "套件详情",
     "loading": "正在加载套件详情...",

@@ -28,6 +28,7 @@ pub struct Skill {
     pub source: Option<String>,
     pub content: Option<String>,
     pub scanned_at: String,
+    pub remote_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -129,7 +130,8 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             is_central     BOOLEAN NOT NULL DEFAULT 0,
             source         TEXT,
             content        TEXT,
-            scanned_at     TEXT NOT NULL
+            scanned_at     TEXT NOT NULL,
+            remote_url     TEXT
         )",
     )
     .execute(pool)
@@ -431,6 +433,13 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         "marketplace_skills",
         "cache_updated_at",
         "ALTER TABLE marketplace_skills ADD COLUMN cache_updated_at TEXT",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "skills",
+        "remote_url",
+        "ALTER TABLE skills ADD COLUMN remote_url TEXT",
     )
     .await?;
 
@@ -1084,39 +1093,43 @@ pub fn builtin_agents() -> Vec<Agent> {
 pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO skills
-         (id, name, collection_id, description, file_path, canonical_path, is_central, source, content, scanned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, name, collection_id, description, file_path, canonical_path, is_central, source, content, scanned_at, remote_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name           = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.name
-                              ELSE excluded.name
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.name
+                               ELSE excluded.name
+                             END,
            collection_id  = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.collection_id
-                              ELSE excluded.collection_id
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.collection_id
+                               ELSE excluded.collection_id
+                             END,
            description    = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.description
-                              ELSE excluded.description
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.description
+                               ELSE excluded.description
+                             END,
            file_path      = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.file_path
-                              ELSE excluded.file_path
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.file_path
+                               ELSE excluded.file_path
+                             END,
            canonical_path = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.canonical_path
-                              ELSE COALESCE(excluded.canonical_path, skills.canonical_path)
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.canonical_path
+                               ELSE COALESCE(excluded.canonical_path, skills.canonical_path)
+                             END,
            is_central     = MAX(skills.is_central, excluded.is_central),
            source         = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.source
-                              ELSE excluded.source
-                            END,
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.source
+                               ELSE excluded.source
+                             END,
            content        = CASE
-                              WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.content
-                              ELSE excluded.content
-                            END,
-           scanned_at     = excluded.scanned_at",
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.content
+                               ELSE excluded.content
+                             END,
+           scanned_at     = excluded.scanned_at,
+           remote_url     = CASE
+                               WHEN skills.is_central = 1 AND excluded.is_central = 0 THEN skills.remote_url
+                               ELSE COALESCE(excluded.remote_url, skills.remote_url)
+                             END",
     )
     .bind(&skill.id)
     .bind(&skill.name)
@@ -1128,6 +1141,7 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     .bind(&skill.source)
     .bind(&skill.content)
     .bind(&skill.scanned_at)
+    .bind(&skill.remote_url)
     .execute(pool)
     .await
     .map(|_| ())
@@ -1146,6 +1160,7 @@ fn observation_to_skill(observation: AgentSkillObservation, default_collection_i
         source: Some(observation.link_type),
         content: None,
         scanned_at: observation.scanned_at,
+        remote_url: None,
     }
 }
 
@@ -2453,6 +2468,7 @@ mod tests {
             source: None,
             content: Some("# Test Skill\n\nContent here.".to_string()),
             scanned_at: Utc::now().to_rfc3339(),
+            remote_url: None,
         }
     }
 

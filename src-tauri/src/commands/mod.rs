@@ -6,5 +6,6 @@ pub mod linker;
 pub mod marketplace;
 pub mod scanner;
 pub mod settings;
+pub mod skill_updates;
 pub mod skills;
 pub mod updater;
