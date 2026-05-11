@@ -439,7 +439,8 @@
     "checkingUpdate": "Checking...",
     "updateAvailable": "New version {{version}} available",
     "downloadUpdate": "Download Update",
-    "alreadyLatest": "You are on the latest version"
+    "alreadyLatest": "You are on the latest version",
+    "versionComparison": "Current {{current}}, latest {{latest}}"
   },
   "addDir": {
     "title": "Add Project Directory",

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const GITHUB_REPO: &str = "iamzhihuix/skills-manage";
+const GITHUB_REPO: &str = "yzxcxy/skills-manage";
 const GITHUB_API_URL: &str = "https://api.github.com";
 
 // ─── Types ────────────────────────────────────────────────────────────────────

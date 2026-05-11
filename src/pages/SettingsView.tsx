@@ -461,7 +461,7 @@ export function SettingsView() {
       if (result.hasUpdate) {
         toast.success(t("settings.updateAvailable", { version: result.latestVersion }));
       } else {
-        toast.success(t("settings.latestVersion"));
+        toast.success(t("settings.alreadyLatest"));
       }
     } catch (err) {
       const text = String(err);
@@ -822,6 +822,12 @@ export function SettingsView() {
                           {new Date(updateCheck.result.publishedAt).toLocaleDateString()}
                         </span>
                       )}
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {t("settings.versionComparison", {
+                          current: updateCheck.result.currentVersion,
+                          latest: updateCheck.result.latestVersion,
+                        })}
+                      </div>
                     </div>
                     <Button size="sm" onClick={() => handleOpenReleaseUrl(updateCheck.result!.releaseUrl)}>
                       <Download className="size-3.5" />
@@ -832,7 +838,11 @@ export function SettingsView() {
               )}
               {updateCheck?.result && !updateCheck.result.hasUpdate && (
                 <p className="text-sm text-muted-foreground">
-                  {t("settings.alreadyLatest")}
+                  {t("settings.alreadyLatest")} ·{" "}
+                  {t("settings.versionComparison", {
+                    current: updateCheck.result.currentVersion,
+                    latest: updateCheck.result.latestVersion,
+                  })}
                 </p>
               )}
               {updateCheck?.error && (
