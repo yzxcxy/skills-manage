@@ -65,6 +65,7 @@
     "originUser": "用户来源",
     "originPlugin": "插件来源",
     "originCompatibility": "兼容来源",
+    "originSystem": "系统来源",
     "readOnly": "只读",
     "noSourceSkills": "{{name}} 下暂无{{source}}技能",
     "uninstallFromLabel": "从 {{platform}} 卸载 {{skill}}"

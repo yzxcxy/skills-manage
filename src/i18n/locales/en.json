@@ -64,6 +64,7 @@
     },
     "originUser": "User source",
     "originPlugin": "Plugin source",
+    "originSystem": "System source",
     "originCompatibility": "Compatibility source",
     "readOnly": "Read-only",
     "noSourceSkills": "No {{source}} skills installed for {{name}}",

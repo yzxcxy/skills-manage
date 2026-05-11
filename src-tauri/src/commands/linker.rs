@@ -225,18 +225,6 @@ async fn canonical_dir_for_skill(
     Err(format!("Canonical skill '{}' not found in central directory", skill_id))
 }
 
-async fn existing_install_path_for_agent(
-    pool: &DbPool,
-    skill_id: &str,
-    agent_id: &str,
-) -> Result<Option<String>, String> {
-    Ok(db::get_skill_installations(pool, skill_id)
-        .await?
-        .into_iter()
-        .find(|installation| installation.agent_id == agent_id)
-        .map(|installation| installation.installed_path))
-}
-
 // ─── Core Logic ───────────────────────────────────────────────────────────────
 
 /// Core install logic, separated from the Tauri layer for testability.

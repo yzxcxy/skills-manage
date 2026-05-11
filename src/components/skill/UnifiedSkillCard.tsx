@@ -537,22 +537,29 @@ function SourceIndicator({ sourceType }: { sourceType: string }) {
 function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   const { t, i18n } = useTranslation();
   const isPlugin = originKind === "plugin";
+  const isSystem = originKind === "system";
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
         isPlugin
           ? "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300"
-          : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
+          : isSystem
+            ? "bg-slate-500/10 text-slate-700 ring-slate-500/20 dark:text-slate-300"
+            : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
       )}
     >
       {isPlugin
         ? t("platform.originPlugin", {
             defaultValue: i18n.language.startsWith("zh") ? "插件来源" : "Plugin source",
           })
-        : t("platform.originUser", {
-            defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",
-          })}
+        : isSystem
+          ? t("platform.originSystem", {
+              defaultValue: i18n.language.startsWith("zh") ? "系统来源" : "System source",
+            })
+          : t("platform.originUser", {
+              defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",
+            })}
     </span>
   );
 }

@@ -64,6 +64,7 @@ impl ScanDirectoryOptions {
 enum AgentSkillSourceKind {
     User,
     Plugin,
+    System,
 }
 
 impl AgentSkillSourceKind {
@@ -71,11 +72,12 @@ impl AgentSkillSourceKind {
         match self {
             Self::User => "user",
             Self::Plugin => "plugin",
+            Self::System => "system",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Plugin)
+        matches!(self, Self::Plugin | Self::System)
     }
 }
 
@@ -550,7 +552,7 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
 fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
     let primary_root = PathBuf::from(&agent.global_skills_dir);
 
-    match agent.id.as_str() {
+    let mut roots = match agent.id.as_str() {
         "claude-code" => {
             let mut roots = vec![AgentScanRoot {
                 path: primary_root.clone(),
@@ -565,7 +567,22 @@ fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
             source_root: None,
             source_kind: None,
         }],
+    };
+
+    // Platform-specific system skill caches (e.g. Codex's ~/.codex/skills/.system).
+    // These are read-only built-in skills shipped by the platform itself.
+    if agent.id == "codex" {
+        let system_dir = primary_root.join(".system");
+        if system_dir.exists() {
+            roots.push(AgentScanRoot {
+                path: system_dir.clone(),
+                source_root: Some(system_dir),
+                source_kind: Some(AgentSkillSourceKind::System),
+            });
+        }
     }
+
+    roots
 }
 
 fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
