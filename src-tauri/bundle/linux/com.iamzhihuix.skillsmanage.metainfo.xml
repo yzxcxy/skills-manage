@@ -21,6 +21,7 @@
     <binary>skills-manage</binary>
   </provides>
   <releases>
+    <release version="0.13.0" date="2026-05-11"/>
     <release version="0.10.0" date="2026-04-30"/>
   </releases>
 </component>
