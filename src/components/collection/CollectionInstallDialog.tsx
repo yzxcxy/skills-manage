@@ -41,7 +41,9 @@ export function CollectionInstallDialog({
   mode = "install",
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
-  const targetAgents = agents.filter(isInstallTargetAgent);
+  const targetAgents = agents.filter(
+    (agent) => isInstallTargetAgent(agent) && agent.is_detected
+  );
 
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
@@ -51,15 +53,10 @@ export function CollectionInstallDialog({
   // Reset when dialog opens.
   useEffect(() => {
     if (open) {
-      // Default: select all detected agents.
-      const initial = new Set<string>(
-        targetAgents.filter((a) => a.is_detected).map((a) => a.id)
-      );
-      setSelectedAgentIds(initial);
+      setSelectedAgentIds(new Set());
       setError(null);
       setResult(null);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   function handleToggle(agentId: string, checked: boolean) {
@@ -131,11 +128,6 @@ export function CollectionInstallDialog({
                     >
                       {agent.display_name}
                     </span>
-                    {!agent.is_detected && (
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        {t(mode === "uninstall" ? "batchUninstall.notDetected" : "batchInstall.notDetected")}
-                      </span>
-                    )}
                   </div>
                 );
               })

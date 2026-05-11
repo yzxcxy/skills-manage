@@ -43,7 +43,9 @@ export function InstallDialog({
   const { t } = useTranslation();
   // Only show real install targets; source-only categories such as Obsidian
   // must never become selectable platform targets.
-  const targetAgents = agents.filter(isInstallTargetAgent);
+  const targetAgents = agents.filter(
+    (agent) => isInstallTargetAgent(agent) && agent.is_detected
+  );
 
   // Track which agents are selected for installation.
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(
@@ -53,18 +55,11 @@ export function InstallDialog({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // When the dialog opens for a skill, pre-select currently unlinked agents.
-  // Agents that already have this skill are checked by default too so the
-  // user can see the full picture, but they can deselect any.
   useEffect(() => {
     if (open && skill) {
-      // Default: check agents that are already linked (show current state).
       const initialSelection = new Set<string>(
         targetAgents
-          .filter((a) =>
-            skill.linked_agents.includes(a.id) ||
-            (skill.read_only_agents?.includes(a.id) ?? false)
-          )
+          .filter((a) => skill.read_only_agents?.includes(a.id) ?? false)
           .map((a) => a.id)
       );
       setSelectedAgentIds(initialSelection);
@@ -173,11 +168,6 @@ export function InstallDialog({
                         {t("installDialog.alreadyLinked")}
                       </span>
                     ) : null}
-                    {!agent.is_detected && (
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        {t("installDialog.notDetected")}
-                      </span>
-                    )}
                   </div>
                 );
               })
