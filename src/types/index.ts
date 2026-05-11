@@ -322,6 +322,34 @@ export interface MarketplaceSkill {
   cache_updated_at?: string | null;
 }
 
+export interface MarketplaceInstallResult {
+  importedSkillId: string;
+  skillName: string;
+  targetDirectory: string;
+  collectionId: string;
+  collectionName: string;
+}
+
+export interface SkillsShSkill {
+  id: string;
+  skill_id: string;
+  name: string;
+  source: string;
+  installs: number;
+  stars?: number | null;
+}
+
+export interface SkillsShFileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface SelectedSkillFile {
+  path: string;
+  relativePath: string;
+}
+
 export interface GitHubRepoRef {
   owner: string;
   repo: string;

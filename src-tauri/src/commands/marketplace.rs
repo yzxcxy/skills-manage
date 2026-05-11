@@ -1,10 +1,13 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
+use super::collections::create_collection_impl;
 use super::github_import;
+use crate::db;
 use crate::path_utils::central_skills_dir;
 use crate::AppState;
 
@@ -12,7 +15,9 @@ fn is_skill_installed_in_central(central_dir: &std::path::Path, skill_name: &str
     if let Ok(entries) = std::fs::read_dir(central_dir) {
         for entry in entries.flatten() {
             let collection_path = entry.path();
-            if collection_path.is_dir() && collection_path.join(skill_name).join("SKILL.md").exists() {
+            if collection_path.is_dir()
+                && collection_path.join(skill_name).join("SKILL.md").exists()
+            {
                 return true;
             }
         }
@@ -53,6 +58,33 @@ pub struct MarketplaceSkill {
     pub cache_updated_at: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceInstallResult {
+    pub imported_skill_id: String,
+    pub skill_name: String,
+    pub target_directory: String,
+    pub collection_id: String,
+    pub collection_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsShSkill {
+    pub id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub source: String,
+    pub installs: u64,
+    pub stars: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsShFileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrySyncStatus {
@@ -83,6 +115,13 @@ pub struct RegistryCacheMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct SyncRegistryOptions {
     pub force_refresh: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RawGithubSkillUrl {
+    repo: github_import::GitHubRepoRef,
+    skill_md_path: String,
+    source_path: String,
 }
 
 // ─── Registry Fetcher ────────────────────────────────────────────────────────
@@ -127,6 +166,242 @@ fn marketplace_skills_from_candidates(
     }
 
     skills
+}
+
+fn skill_id_from_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Skill name cannot be empty.".to_string());
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn skill_id_from_source_path(source_path: &str, fallback_name: &str) -> Result<String, String> {
+    if source_path == "." {
+        return skill_id_from_name(fallback_name);
+    }
+
+    source_path
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Unable to determine skill id from source path.".to_string())
+}
+
+fn parse_raw_github_skill_url(download_url: &str) -> Option<RawGithubSkillUrl> {
+    let parsed = reqwest::Url::parse(download_url).ok()?;
+    if parsed.host_str()? != "raw.githubusercontent.com" {
+        return None;
+    }
+
+    let parts = parsed.path_segments()?.collect::<Vec<_>>();
+    if parts.len() < 4 {
+        return None;
+    }
+
+    let skill_md_path = parts[3..].join("/");
+    if !skill_md_path.ends_with("SKILL.md") {
+        return None;
+    }
+
+    let source_path = match Path::new(&skill_md_path).parent() {
+        Some(parent) if parent.as_os_str().is_empty() => ".".to_string(),
+        Some(parent) => parent.to_string_lossy().into_owned(),
+        None => ".".to_string(),
+    };
+
+    Some(RawGithubSkillUrl {
+        repo: github_import::GitHubRepoRef {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+            branch: parts[2].to_string(),
+            normalized_url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+        },
+        skill_md_path,
+        source_path,
+    })
+}
+
+async fn resolve_import_collection(
+    pool: &db::DbPool,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
+    default_new_name: Option<String>,
+) -> Result<db::Collection, String> {
+    if let Some(id) = collection_id.filter(|id| !id.trim().is_empty()) {
+        return db::get_collection_by_id(pool, &id)
+            .await?
+            .ok_or_else(|| format!("Collection '{}' not found", id));
+    }
+
+    if let Some(name) = collection_name
+        .or(default_new_name)
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+    {
+        return create_collection_impl(pool, &name, None).await;
+    }
+
+    db::ensure_default_collection(pool).await
+}
+
+fn remove_existing_skill_directory(
+    pool_skill: &db::Skill,
+    target_dir: &Path,
+) -> Result<(), String> {
+    let Some(existing_path) = &pool_skill.canonical_path else {
+        return Ok(());
+    };
+    let existing_dir = PathBuf::from(existing_path);
+    if existing_dir == target_dir || !existing_dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&existing_dir).map_err(|e| {
+        format!(
+            "Failed to remove existing canonical skill '{}': {}",
+            existing_dir.display(),
+            e
+        )
+    })
+}
+
+async fn prepare_marketplace_target_dir(
+    pool: &db::DbPool,
+    skill_id: &str,
+    target_dir: &Path,
+) -> Result<(), String> {
+    if let Some(existing) = db::get_skill_by_id(pool, skill_id).await? {
+        if existing.is_central {
+            remove_existing_skill_directory(&existing, target_dir)?;
+        }
+    }
+
+    if target_dir.exists() {
+        std::fs::remove_dir_all(target_dir).map_err(|e| {
+            format!(
+                "Failed to replace existing canonical skill '{}': {}",
+                skill_id, e
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+async fn import_marketplace_source_impl(
+    pool: &db::DbPool,
+    suggested_name: String,
+    download_url: String,
+    source: Option<String>,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
+) -> Result<MarketplaceInstallResult, String> {
+    let collection = resolve_import_collection(pool, collection_id, collection_name, None).await?;
+    let target_root = central_skills_dir().join(&collection.id);
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let (skill_id, skill_name, description, target_dir, remote_url) = if let Some(raw_ref) =
+        parse_raw_github_skill_url(&download_url)
+    {
+        let auth = github_import::github_direct_auth_from_settings(pool).await?;
+        let snapshot =
+            github_import::download_repo_snapshot(&client, &raw_ref.repo, auth.as_deref()).await?;
+        let raw_content = snapshot.files.get(&raw_ref.skill_md_path).ok_or_else(|| {
+            format!(
+                "SKILL.md not found at '{}' in repository snapshot.",
+                raw_ref.skill_md_path
+            )
+        })?;
+        let content_str = std::str::from_utf8(raw_content)
+            .map_err(|_| "SKILL.md is not valid UTF-8.".to_string())?;
+        let frontmatter = github_import::parse_frontmatter(content_str)
+            .ok_or_else(|| "Skill is missing valid frontmatter.".to_string())?;
+        let skill_id = skill_id_from_source_path(&raw_ref.source_path, &suggested_name)?;
+        let target_dir = target_root.join(&skill_id);
+        prepare_marketplace_target_dir(pool, &skill_id, &target_dir).await?;
+
+        let source_files =
+            github_import::collect_snapshot_source_files(&snapshot, &raw_ref.source_path)?;
+        let mut progress_state = github_import::GitHubImportProgressState::default();
+        github_import::write_snapshot_source_to_target(
+            &snapshot,
+            &source_files,
+            &target_dir,
+            &raw_ref.source_path,
+            &mut progress_state,
+            None,
+        )?;
+
+        (
+            skill_id,
+            frontmatter.name,
+            frontmatter.description,
+            target_dir,
+            download_url.clone(),
+        )
+    } else {
+        let response = client
+            .get(&download_url)
+            .send()
+            .await
+            .map_err(|e| format!("Download failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("Download returned {}", response.status()));
+        }
+
+        let content = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+        let frontmatter = github_import::parse_frontmatter(&content)
+            .ok_or_else(|| "Skill is missing valid frontmatter.".to_string())?;
+        let skill_id = skill_id_from_name(&suggested_name)?;
+        let target_dir = target_root.join(&skill_id);
+        prepare_marketplace_target_dir(pool, &skill_id, &target_dir).await?;
+        std::fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        std::fs::write(target_dir.join("SKILL.md"), &content)
+            .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+        (
+            skill_id,
+            frontmatter.name,
+            frontmatter.description,
+            target_dir,
+            download_url.clone(),
+        )
+    };
+
+    let skill_md_path = target_dir.join("SKILL.md");
+    let db_skill = db::Skill {
+        id: skill_id.clone(),
+        name: skill_name.clone(),
+        collection_id: collection.id.clone(),
+        description,
+        file_path: skill_md_path.to_string_lossy().into_owned(),
+        canonical_path: Some(target_dir.to_string_lossy().into_owned()),
+        is_central: true,
+        source,
+        content: None,
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        remote_url: Some(remote_url),
+    };
+    db::upsert_skill(pool, &db_skill).await?;
+
+    Ok(MarketplaceInstallResult {
+        imported_skill_id: skill_id,
+        skill_name,
+        target_directory: target_dir.to_string_lossy().into_owned(),
+        collection_id: collection.id,
+        collection_name: collection.name,
+    })
 }
 
 // ─── IPC Commands ────────────────────────────────────────────────────────────
@@ -497,7 +772,7 @@ struct MarketplaceSkillRow {
 pub async fn install_marketplace_skill(
     state: State<'_, AppState>,
     skill_id: String,
-) -> Result<(), String> {
+) -> Result<MarketplaceInstallResult, String> {
     // Get skill info
     let skill = sqlx::query_as::<_, MarketplaceSkillRow>(
         "SELECT id, registry_id, name, description, download_url, is_installed, synced_at
@@ -509,53 +784,15 @@ pub async fn install_marketplace_skill(
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "Skill not found".to_string())?;
 
-    // Download SKILL.md content
-    let client = reqwest::Client::builder()
-        .user_agent("skills-manage/0.9.1")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
-        .get(&skill.download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Download failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Download returned {}", resp.status()));
-    }
-
-    let content = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    // Install into the default collection.
-    let default_col = crate::db::ensure_default_collection(&state.db).await?;
-    let skill_dir = central_skills_dir().join(&default_col.id).join(&skill.name);
-    std::fs::create_dir_all(&skill_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
-
-    let skill_md_path = skill_dir.join("SKILL.md");
-    std::fs::write(&skill_md_path, &content)
-        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
-
-    // Record the skill in the skills table so it shows up in scans.
-    let now = chrono::Utc::now().to_rfc3339();
-    let db_skill = crate::db::Skill {
-        id: skill.name.clone(),
-        name: skill.name.clone(),
-        collection_id: default_col.id,
-        description: None,
-        file_path: skill_md_path.to_string_lossy().into_owned(),
-        canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
-        is_central: true,
-        source: Some("marketplace".to_string()),
-        content: None,
-        scanned_at: now.clone(),
-        remote_url: Some(skill.download_url.clone()),
-    };
-    crate::db::upsert_skill(&state.db, &db_skill).await?;
+    let result = import_marketplace_source_impl(
+        &state.db,
+        skill.name.clone(),
+        skill.download_url.clone(),
+        Some("marketplace".to_string()),
+        None,
+        None,
+    )
+    .await?;
 
     // Mark as installed in DB
     sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")
@@ -564,7 +801,439 @@ pub async fn install_marketplace_skill(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(())
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn install_marketplace_skill_to_collection(
+    state: State<'_, AppState>,
+    skill_id: String,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
+) -> Result<MarketplaceInstallResult, String> {
+    let skill = sqlx::query_as::<_, MarketplaceSkillRow>(
+        "SELECT id, registry_id, name, description, download_url, is_installed, synced_at
+         FROM marketplace_skills WHERE id = ?",
+    )
+    .bind(&skill_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Skill not found".to_string())?;
+
+    let result = import_marketplace_source_impl(
+        &state.db,
+        skill.name.clone(),
+        skill.download_url.clone(),
+        Some("marketplace".to_string()),
+        collection_id,
+        collection_name,
+    )
+    .await?;
+
+    sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")
+        .bind(&skill_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn import_marketplace_skill_from_url(
+    state: State<'_, AppState>,
+    name: String,
+    download_url: String,
+    source: Option<String>,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
+) -> Result<MarketplaceInstallResult, String> {
+    import_marketplace_source_impl(
+        &state.db,
+        name,
+        download_url,
+        source,
+        collection_id,
+        collection_name,
+    )
+    .await
+}
+
+// ─── skills.sh Integration ───────────────────────────────────────────────────
+
+async fn github_get_with_auth_fallback(
+    client: &reqwest::Client,
+    url: &str,
+    auth: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    if let Some(token) = auth {
+        let response = client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+    }
+
+    client.get(url).send().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn search_skills_sh(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<SkillsShSkill>, String> {
+    let limit = limit.unwrap_or(20).min(50);
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let limit_string = limit.to_string();
+    let response = client
+        .get("https://skills.sh/api/search")
+        .query(&[("q", query.as_str()), ("limit", limit_string.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("skills.sh search failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("skills.sh returned {}", response.status()));
+    }
+
+    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let empty = Vec::new();
+    let mut skills = data
+        .get("skills")
+        .and_then(|value| value.as_array())
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|skill| {
+            Some(SkillsShSkill {
+                id: skill.get("id")?.as_str()?.to_string(),
+                skill_id: skill.get("skillId")?.as_str()?.to_string(),
+                name: skill.get("name")?.as_str()?.to_string(),
+                source: skill.get("source")?.as_str()?.to_string(),
+                installs: skill.get("installs").and_then(|v| v.as_u64()).unwrap_or(0),
+                stars: None,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let auth = github_import::github_direct_auth_from_settings(&state.db).await?;
+    let unique_sources = skills
+        .iter()
+        .map(|skill| skill.source.as_str())
+        .collect::<HashSet<_>>();
+    let star_results = futures_util::future::join_all(unique_sources.iter().map(|source| {
+        let url = format!("https://api.github.com/repos/{}", source);
+        let client = client.clone();
+        let token = auth.clone();
+        async move {
+            let response = github_get_with_auth_fallback(&client, &url, token.as_deref())
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let data = response.json::<serde_json::Value>().await.ok()?;
+            Some((source.to_string(), data.get("stargazers_count")?.as_u64()?))
+        }
+    }))
+    .await;
+    let star_map = star_results
+        .into_iter()
+        .flatten()
+        .collect::<HashMap<_, _>>();
+
+    for skill in &mut skills {
+        skill.stars = star_map.get(&skill.source).copied();
+    }
+
+    Ok(skills)
+}
+
+const COMMON_SKILL_PREFIXES: &[&str] = &["", "skills/"];
+
+fn extract_dir_path(md_url: &str) -> Option<String> {
+    let suffix = md_url.strip_suffix("/SKILL.md")?;
+    let parts = suffix.split('/').collect::<Vec<_>>();
+    if parts.len() > 6 {
+        Some(parts[6..].join("/"))
+    } else {
+        Some(String::new())
+    }
+}
+
+fn find_skill_path_in_snapshot(
+    snapshot: &github_import::GitHubRepoSnapshot,
+    skill_id: &str,
+) -> Option<String> {
+    snapshot.files.keys().find_map(|path| {
+        let path_ref = Path::new(path);
+        if path_ref.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
+            return None;
+        }
+        let parent = path_ref.parent().unwrap_or_else(|| Path::new(""));
+        if parent.file_name().and_then(|name| name.to_str()) == Some(skill_id) {
+            Some(parent.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    })
+}
+
+async fn resolve_skills_sh_repo(
+    pool: &db::DbPool,
+    source: &str,
+) -> Result<(github_import::GitHubRepoRef, Option<String>), String> {
+    let repo_url = format!("https://github.com/{}", source);
+    let auth = github_import::github_direct_auth_from_settings(pool).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth.as_deref()).await {
+        Ok(repo) => repo,
+        Err(error) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+            .await
+            .map_err(|_| error)?,
+        Err(error) => return Err(error),
+    };
+    Ok((repo, auth))
+}
+
+async fn find_skill_md_url(
+    client: &reqwest::Client,
+    repo: &github_import::GitHubRepoRef,
+    skill_id: &str,
+    auth: Option<&str>,
+) -> Result<String, String> {
+    let direct_results =
+        futures_util::future::join_all(COMMON_SKILL_PREFIXES.iter().map(|prefix| {
+            let url = format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}{}/SKILL.md",
+                repo.owner, repo.repo, repo.branch, prefix, skill_id
+            );
+            async move {
+                let response = client.get(&url).send().await.ok()?;
+                response.status().is_success().then_some(url)
+            }
+        }))
+        .await;
+
+    if let Some(url) = direct_results.into_iter().flatten().next() {
+        return Ok(url);
+    }
+
+    let tree_url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        repo.owner, repo.repo, repo.branch
+    );
+    let response = github_get_with_auth_fallback(client, &tree_url, auth).await?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub API returned {}", response.status()));
+    }
+
+    let data = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse tree: {}", e))?;
+    let target_suffix = format!("{}/SKILL.md", skill_id);
+    let tree = data
+        .get("tree")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "GitHub tree response is missing entries.".to_string())?;
+
+    for entry in tree {
+        let Some(path) = entry.get("path").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if path.ends_with(&target_suffix) {
+            return Ok(format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                repo.owner, repo.repo, repo.branch, path
+            ));
+        }
+    }
+
+    Err(format!(
+        "Could not find SKILL.md for '{}' in {}",
+        skill_id, repo.normalized_url
+    ))
+}
+
+fn tree_entries_under_dir(tree_data: &serde_json::Value, dir_path: &str) -> Vec<SkillsShFileEntry> {
+    let prefix = if dir_path.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", dir_path)
+    };
+    let Some(tree) = tree_data.get("tree").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+
+    tree.iter()
+        .filter_map(|entry| {
+            let path = entry.get("path")?.as_str()?;
+            if path == dir_path || (!prefix.is_empty() && !path.starts_with(&prefix)) {
+                return None;
+            }
+
+            Some(SkillsShFileEntry {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                path: path.to_string(),
+                is_dir: entry.get("type").and_then(|value| value.as_str()) == Some("tree"),
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn resolve_skills_sh_url(
+    state: State<'_, AppState>,
+    source: String,
+    skill_id: String,
+) -> Result<String, String> {
+    let (repo, auth) = resolve_skills_sh_repo(&state.db, &source).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    find_skill_md_url(&client, &repo, &skill_id, auth.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn browse_skills_sh_directory(
+    state: State<'_, AppState>,
+    source: String,
+    skill_id: String,
+) -> Result<Vec<SkillsShFileEntry>, String> {
+    let (repo, auth) = resolve_skills_sh_repo(&state.db, &source).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let md_url = find_skill_md_url(&client, &repo, &skill_id, auth.as_deref()).await?;
+    let dir_path = extract_dir_path(&md_url).unwrap_or_default();
+    let tree_url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        repo.owner, repo.repo, repo.branch
+    );
+    let response = github_get_with_auth_fallback(&client, &tree_url, auth.as_deref()).await?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub API returned {}", response.status()));
+    }
+    let data = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse tree: {}", e))?;
+    Ok(tree_entries_under_dir(&data, &dir_path))
+}
+
+#[tauri::command]
+pub async fn read_skills_sh_file(
+    state: State<'_, AppState>,
+    source: String,
+    file_path: String,
+) -> Result<String, String> {
+    let (repo, _auth) = resolve_skills_sh_repo(&state.db, &source).await?;
+    let url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/{}",
+        repo.owner, repo.repo, repo.branch, file_path
+    );
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch file: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("File fetch returned {}", response.status()));
+    }
+    response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))
+}
+
+#[tauri::command]
+pub async fn install_from_skills_sh(
+    state: State<'_, AppState>,
+    source: String,
+    skill_id: String,
+    collection_id: Option<String>,
+    collection_name: Option<String>,
+) -> Result<MarketplaceInstallResult, String> {
+    let (repo, auth) = resolve_skills_sh_repo(&state.db, &source).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let snapshot = github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?;
+    let source_path = find_skill_path_in_snapshot(&snapshot, &skill_id).ok_or_else(|| {
+        format!(
+            "Could not find skill '{}' in repository '{}'",
+            skill_id, source
+        )
+    })?;
+    let skill_md_path = format!("{}/SKILL.md", source_path);
+    let raw_content = snapshot
+        .files
+        .get(&skill_md_path)
+        .ok_or_else(|| format!("SKILL.md not found at '{}' in snapshot", skill_md_path))?;
+    let content_str =
+        std::str::from_utf8(raw_content).map_err(|_| "SKILL.md is not valid UTF-8.".to_string())?;
+    let frontmatter = github_import::parse_frontmatter(content_str)
+        .ok_or_else(|| "Skill is missing valid frontmatter.".to_string())?;
+    let collection =
+        resolve_import_collection(&state.db, collection_id, collection_name, None).await?;
+    let final_skill_id = skill_id_from_source_path(&source_path, &skill_id)?;
+    let target_dir = central_skills_dir()
+        .join(&collection.id)
+        .join(&final_skill_id);
+    prepare_marketplace_target_dir(&state.db, &final_skill_id, &target_dir).await?;
+    let source_files = github_import::collect_snapshot_source_files(&snapshot, &source_path)?;
+    let mut progress_state = github_import::GitHubImportProgressState::default();
+    github_import::write_snapshot_source_to_target(
+        &snapshot,
+        &source_files,
+        &target_dir,
+        &source_path,
+        &mut progress_state,
+        None,
+    )?;
+
+    let remote_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}/{}",
+        repo.owner, repo.repo, repo.branch, skill_md_path
+    );
+    let db_skill = db::Skill {
+        id: final_skill_id.clone(),
+        name: frontmatter.name.clone(),
+        collection_id: collection.id.clone(),
+        description: frontmatter.description,
+        file_path: target_dir.join("SKILL.md").to_string_lossy().into_owned(),
+        canonical_path: Some(target_dir.to_string_lossy().into_owned()),
+        is_central: true,
+        source: Some(format!("skills.sh:{}", source)),
+        content: None,
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        remote_url: Some(remote_url),
+    };
+    db::upsert_skill(&state.db, &db_skill).await?;
+
+    Ok(MarketplaceInstallResult {
+        imported_skill_id: final_skill_id,
+        skill_name: frontmatter.name,
+        target_directory: target_dir.to_string_lossy().into_owned(),
+        collection_id: collection.id,
+        collection_name: collection.name,
+    })
 }
 
 // ─── AI Explanation ──────────────────────────────────────────────────────────

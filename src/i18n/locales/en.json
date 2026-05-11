@@ -19,7 +19,8 @@
     "retry": "Retry",
     "loading": "Loading...",
     "search": "Search",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "detail": "Detail"
   },
   "sidebar": {
     "byTool": "By Tool",
@@ -561,6 +562,10 @@
     "addSource": "Add Source",
     "installSuccess": "Skill installed successfully",
     "installError": "Install failed: {{error}}",
+    "skillsShSearchPlaceholder": "Search skills.sh...",
+    "skillsShEmpty": "Enter keywords to search skills.sh",
+    "skillsShSearching": "Searching skills.sh...",
+    "skillsShStats": "★ {{stars}} · {{source}}",
     "update": "Update",
     "forceRefresh": "Force Refresh",
     "cacheReused": "Reopening this source reuses backend cache by default.",

@@ -30,11 +30,15 @@ import {
 } from "@/data/officialSources";
 import { MarketplaceSkillDetailDrawer, type MarketplaceSkillDetail } from "@/components/marketplace/MarketplaceSkillDetailDrawer";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
+import {
+  ImportCollectionPickerDialog,
+  type ImportCollectionChoice,
+} from "@/components/collection/ImportCollectionPickerDialog";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import type { GitHubRepoPreview } from "@/types";
+import type { GitHubRepoPreview, SkillsShFileEntry, SkillsShSkill } from "@/types";
 
-type TabId = "recommended" | "official";
+type TabId = "recommended" | "official" | "skillssh";
 
 type PreviewStatus =
   | { kind: "idle" }
@@ -47,6 +51,26 @@ type PreviewSkill = {
   description?: string;
   downloadUrl: string;
 };
+
+type MarketplaceInstallTarget =
+  | {
+      kind: "registry";
+      skillId: string;
+      detailId?: string;
+    }
+  | {
+      kind: "url";
+      name: string;
+      downloadUrl: string;
+      source?: string | null;
+      detailId?: string;
+    }
+  | {
+      kind: "skillssh";
+      source: string;
+      skillId: string;
+      detailId?: string;
+    };
 
 // ─── Publisher Card ──────────────────────────────────────────────────────────
 
@@ -86,11 +110,16 @@ export function MarketplaceView() {
   const loadRegistries = useMarketplaceStore((s) => s.loadRegistries);
   const loadPreviewSkills = useMarketplaceStore((s) => s.loadPreviewSkills);
   const installSkill = useMarketplaceStore((s) => s.installSkill);
+  const importSkillFromUrl = useMarketplaceStore((s) => s.importSkillFromUrl);
   const getNormalizedRegistryIdentity = useMarketplaceStore((s) => s.getNormalizedRegistryIdentity);
   const githubImport = useMarketplaceStore((s) => s.githubImport);
   const previewGitHubRepoImport = useMarketplaceStore((s) => s.previewGitHubRepoImport);
   const importGitHubRepoSkills = useMarketplaceStore((s) => s.importGitHubRepoSkills);
   const resetGitHubImport = useMarketplaceStore((s) => s.resetGitHubImport);
+  const skillsShResults = useMarketplaceStore((s) => s.skillsShResults);
+  const isSkillsShLoading = useMarketplaceStore((s) => s.isSkillsShLoading);
+  const searchSkillsSh = useMarketplaceStore((s) => s.searchSkillsSh);
+  const installFromSkillsSh = useMarketplaceStore((s) => s.installFromSkillsSh);
 
   const rescan = usePlatformStore((s) => s.rescan);
   const platformAgents = usePlatformStore((s) => s.agents);
@@ -107,17 +136,20 @@ export function MarketplaceView() {
   const [recommendedSearch, setRecommendedSearch] = useState("");
   const [selectedPublisher, setSelectedPublisher] = useState<OfficialPublisher | null>(null);
   const [publisherSearch, setPublisherSearch] = useState("");
+  const [skillsShSearch, setSkillsShSearch] = useState("");
 
   // Preview state — inline skills preview in Official Directory
   const [previewRepo, setPreviewRepo] = useState<string | null>(null); // repo fullName
   const [previewSkills, setPreviewSkills] = useState<PreviewSkill[]>([]);
   const [previewCache, setPreviewCache] = useState<Record<string, PreviewSkill[]>>({});
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [previewInstallingIds, setPreviewInstallingIds] = useState<Set<string>>(new Set());
   const [detailSkill, setDetailSkill] = useState<MarketplaceSkillDetail | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ kind: "idle" });
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
   const [githubRepoUrl, setGitHubRepoUrl] = useState("");
+  const [pendingInstallTarget, setPendingInstallTarget] = useState<MarketplaceInstallTarget | null>(null);
+  const [isCollectionPickerOpen, setIsCollectionPickerOpen] = useState(false);
+  const [resolvingSkillsShIds, setResolvingSkillsShIds] = useState<Set<string>>(new Set());
   const detailTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -149,16 +181,51 @@ export function MarketplaceView() {
   // ── Handlers ───────────────────────────────────────────────────────────
 
 
-  async function handleInstallFromSource(skillId: string) {
+  function requestInstall(target: MarketplaceInstallTarget) {
+    setPendingInstallTarget(target);
+    setIsCollectionPickerOpen(true);
+  }
+
+  function isInstallingTarget(target: MarketplaceInstallTarget) {
+    if (target.kind === "registry") return installingIds.has(target.skillId);
+    if (target.kind === "url") return installingIds.has(`url:${target.downloadUrl}`);
+    return installingIds.has(`skillssh:${target.source}:${target.skillId}`);
+  }
+
+  async function handleCollectionPickerConfirm(choice: ImportCollectionChoice) {
+    if (!pendingInstallTarget) return;
+    setIsCollectionPickerOpen(false);
+
+    const collectionId =
+      choice.type === "existing" && choice.collectionId ? choice.collectionId : undefined;
+    const collectionName =
+      choice.type === "new" && choice.collectionName ? choice.collectionName : undefined;
+
     try {
-      await installSkill(skillId);
-      await rescan();
+      const target = pendingInstallTarget;
+      if (target.kind === "registry") {
+        await installSkill(target.skillId, collectionId, collectionName);
+      } else if (target.kind === "url") {
+        await importSkillFromUrl(
+          target.name,
+          target.downloadUrl,
+          target.source,
+          collectionId,
+          collectionName,
+        );
+      } else {
+        await installFromSkillsSh(target.source, target.skillId, collectionId, collectionName);
+      }
+
+      await Promise.all([rescan(), loadCentralSkills(), loadRegistries()]);
       setDetailSkill((current) =>
-        current && current.id === skillId ? { ...current, installed: true } : current
+        current && current.id === target.detailId ? { ...current, installed: true } : current
       );
       toast.success(t("marketplace.installSuccess"));
     } catch (err) {
       toast.error(String(err));
+    } finally {
+      setPendingInstallTarget(null);
     }
   }
 
@@ -251,47 +318,6 @@ export function MarketplaceView() {
     }
   }
 
-  async function handleInstallPreviewSkill(skill: PreviewSkill) {
-    setPreviewInstallingIds((prev) => new Set(prev).add(skill.name));
-    try {
-      // Download SKILL.md and write to central dir via Tauri FS plugin
-      const resp = await fetch(skill.downloadUrl);
-      if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
-      const content = await resp.text();
-
-      // Write via the Tauri FS plugin
-      const { writeTextFile, mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      const centralAgent = centralAgents.find((a) => a.id === "central");
-      const centralDir = centralAgent?.global_skills_dir;
-      if (!centralDir) {
-        throw new Error("Central agent directory not available");
-      }
-      const skillDir = `${centralDir}/${skill.name}`;
-      // global_skills_dir is relative to home; guard against absolute paths to avoid
-      // double-resolution when BaseDirectory.Home is used.
-      const isAbsolutePath =
-        centralDir.startsWith("/") || /^[A-Za-z]:[/\\]/.test(centralDir);
-      if (isAbsolutePath) {
-        await mkdir(skillDir, { recursive: true });
-        await writeTextFile(`${skillDir}/SKILL.md`, content);
-      } else {
-        await mkdir(skillDir, { baseDir: BaseDirectory.Home, recursive: true });
-        await writeTextFile(`${skillDir}/SKILL.md`, content, { baseDir: BaseDirectory.Home });
-      }
-
-      await rescan();
-      toast.success(t("marketplace.installSuccess"));
-    } catch (err) {
-      toast.error(String(err));
-    } finally {
-      setPreviewInstallingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(skill.name);
-        return next;
-      });
-    }
-  }
-
   function openDetailSkill(skill: MarketplaceSkillDetail, trigger?: EventTarget | null) {
     if (trigger instanceof HTMLElement) {
       detailTriggerRef.current = trigger;
@@ -365,6 +391,7 @@ export function MarketplaceView() {
   const tabs: { id: TabId; label: string }[] = [
     { id: "recommended", label: lang === "zh" ? "推荐" : "Recommended" },
     { id: "official", label: lang === "zh" ? "官方源目录" : "Official Directory" },
+    { id: "skillssh", label: "skills.sh" },
   ];
 
   return (
@@ -641,16 +668,37 @@ export function MarketplaceView() {
                                     className="h-6 text-[10px] px-2"
                                   >
                                     <FileText className="size-3" />
-                                    <span>Detail</span>
+                                    <span>{t("common.detail")}</span>
                                   </Button>
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={(e) => { e.stopPropagation(); handleInstallPreviewSkill(skill); }}
-                                    disabled={previewInstallingIds.has(skill.name)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      requestInstall(
+                                        skill.id.includes("::")
+                                          ? { kind: "registry", skillId: skill.id, detailId: skill.id }
+                                          : {
+                                              kind: "url",
+                                              name: skill.name,
+                                              downloadUrl: skill.downloadUrl,
+                                              source: `github:${repo.fullName}`,
+                                              detailId: skill.id,
+                                            }
+                                      );
+                                    }}
+                                    disabled={isInstallingTarget(
+                                      skill.id.includes("::")
+                                        ? { kind: "registry", skillId: skill.id }
+                                        : { kind: "url", name: skill.name, downloadUrl: skill.downloadUrl }
+                                    )}
                                     className="h-6 text-[10px] px-2"
                                   >
-                                    {previewInstallingIds.has(skill.name)
+                                    {isInstallingTarget(
+                                      skill.id.includes("::")
+                                        ? { kind: "registry", skillId: skill.id }
+                                        : { kind: "url", name: skill.name, downloadUrl: skill.downloadUrl }
+                                    )
                                       ? <Loader2 className="size-3 animate-spin" />
                                       : <Download className="size-3" />}
                                     <span>{t("marketplace.install")}</span>
@@ -669,6 +717,155 @@ export function MarketplaceView() {
           </div>
         )}
 
+        {activeTab === "skillssh" && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  placeholder={t("marketplace.skillsShSearchPlaceholder")}
+                  value={skillsShSearch}
+                  onChange={(event) => setSkillsShSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && skillsShSearch.trim()) {
+                      void searchSkillsSh(skillsShSearch.trim()).catch((err) => toast.error(String(err)));
+                    }
+                  }}
+                  className="pl-8 h-8 text-sm bg-muted/40"
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (skillsShSearch.trim()) {
+                    void searchSkillsSh(skillsShSearch.trim()).catch((err) => toast.error(String(err)));
+                  }
+                }}
+                disabled={isSkillsShLoading || !skillsShSearch.trim()}
+              >
+                {isSkillsShLoading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Search className="size-4" />
+                )}
+                <span>{t("common.search")}</span>
+              </Button>
+            </div>
+
+            {skillsShResults.length === 0 && !isSkillsShLoading ? (
+              <div className="text-center py-12 text-sm text-muted-foreground">
+                {t("marketplace.skillsShEmpty")}
+              </div>
+            ) : null}
+
+            {isSkillsShLoading && skillsShResults.length === 0 ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground text-sm">
+                <Loader2 className="size-4 animate-spin" />
+                {t("marketplace.skillsShSearching")}
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
+              {skillsShResults.map((skill: SkillsShSkill) => {
+                const installTarget: MarketplaceInstallTarget = {
+                  kind: "skillssh",
+                  source: skill.source,
+                  skillId: skill.skill_id,
+                  detailId: `skillssh:${skill.source}:${skill.skill_id}`,
+                };
+                const isInstalling = isInstallingTarget(installTarget);
+                const starCount = skill.stars ?? skill.installs;
+                const starText =
+                  starCount >= 1_000_000
+                    ? `${(starCount / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+                    : starCount >= 1_000
+                      ? `${(starCount / 1_000).toFixed(1).replace(/\.0$/, "")}K`
+                      : `${starCount}`;
+
+                return (
+                  <div
+                    key={skill.id}
+                    className="flex items-center gap-3 rounded-md border border-border p-3 transition-colors hover:border-primary/40"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{skill.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {t("marketplace.skillsShStats", { stars: starText, source: skill.source })}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={resolvingSkillsShIds.has(skill.skill_id)}
+                        onClick={async (event) => {
+                          setResolvingSkillsShIds((current) => new Set(current).add(skill.skill_id));
+                          try {
+                            const [downloadUrl, files] = await Promise.all([
+                              invoke<string>("resolve_skills_sh_url", {
+                                source: skill.source,
+                                skillId: skill.skill_id,
+                              }),
+                              invoke<SkillsShFileEntry[]>("browse_skills_sh_directory", {
+                                source: skill.source,
+                                skillId: skill.skill_id,
+                              }).catch(() => undefined),
+                            ]);
+                            openDetailSkill(
+                              {
+                                id: `skillssh:${skill.source}:${skill.skill_id}`,
+                                name: skill.name,
+                                downloadUrl,
+                                publisher: skill.source,
+                                sourceLabel: "skills.sh",
+                                sourceUrl: `https://github.com/${skill.source}`,
+                                installed: false,
+                                files,
+                                skillsShSource: skill.source,
+                              },
+                              event.currentTarget,
+                            );
+                          } catch (err) {
+                            toast.error(String(err));
+                          } finally {
+                            setResolvingSkillsShIds((current) => {
+                              const next = new Set(current);
+                              next.delete(skill.skill_id);
+                              return next;
+                            });
+                          }
+                        }}
+                        className="h-7 text-xs px-2"
+                      >
+                        {resolvingSkillsShIds.has(skill.skill_id) ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <FileText className="size-3" />
+                        )}
+                        <span>{t("common.detail")}</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => requestInstall(installTarget)}
+                        disabled={isInstalling}
+                        className="h-7 text-xs px-2"
+                      >
+                        {isInstalling ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Download className="size-3" />
+                        )}
+                        <span>{t("marketplace.install")}</span>
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
       </div>
 
       {/* Skill Detail Drawer */}
@@ -678,19 +875,64 @@ export function MarketplaceView() {
           onOpenChange={(open) => { if (!open) setDetailSkill(null); }}
           skill={detailSkill}
           onInstall={() => {
-            if (detailSkill.id.startsWith("skill-")) {
-              void handleInstallFromSource(detailSkill.id);
+            if (detailSkill.skillsShSource) {
+              requestInstall({
+                kind: "skillssh",
+                source: detailSkill.skillsShSource,
+                skillId: detailSkill.id.replace(/^skillssh:[^:]+:/, ""),
+                detailId: detailSkill.id,
+              });
               return;
             }
-            handleInstallPreviewSkill({ id: detailSkill.id, name: detailSkill.name, downloadUrl: detailSkill.downloadUrl });
+            requestInstall(
+              detailSkill.id.includes("::")
+                ? { kind: "registry", skillId: detailSkill.id, detailId: detailSkill.id }
+                : {
+                    kind: "url",
+                    name: detailSkill.name,
+                    downloadUrl: detailSkill.downloadUrl,
+                    source: detailSkill.sourceUrl ?? detailSkill.publisher ?? null,
+                    detailId: detailSkill.id,
+                  }
+            );
           }}
-          isInstalling={installingIds.has(detailSkill.id) || previewInstallingIds.has(detailSkill.name)}
+          isInstalling={
+            detailSkill.skillsShSource
+              ? isInstallingTarget({
+                  kind: "skillssh",
+                  source: detailSkill.skillsShSource,
+                  skillId: detailSkill.id.replace(/^skillssh:[^:]+:/, ""),
+                })
+              : detailSkill.id.includes("::")
+                ? isInstallingTarget({ kind: "registry", skillId: detailSkill.id })
+                : isInstallingTarget({
+                    kind: "url",
+                    name: detailSkill.name,
+                    downloadUrl: detailSkill.downloadUrl,
+                  })
+          }
           onAfterCloseFocus={() => {
             detailTriggerRef.current?.focus();
             detailTriggerRef.current = null;
           }}
         />
       )}
+
+      <ImportCollectionPickerDialog
+        open={isCollectionPickerOpen}
+        onOpenChange={(open) => {
+          setIsCollectionPickerOpen(open);
+          if (!open) setPendingInstallTarget(null);
+        }}
+        onConfirm={handleCollectionPickerConfirm}
+        defaultNewName={
+          pendingInstallTarget?.kind === "skillssh"
+            ? "skills.sh"
+            : pendingInstallTarget?.kind === "url"
+              ? pendingInstallTarget.name
+              : ""
+        }
+      />
 
       <GitHubRepoImportWizard
         open={isGitHubImportOpen}

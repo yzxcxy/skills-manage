@@ -5,6 +5,8 @@ import { setupExplanationStreamListeners } from "@/lib/explanationStream";
 import {
   SkillRegistry,
   MarketplaceSkill,
+  MarketplaceInstallResult,
+  SkillsShSkill,
   GitHubRepoPreview,
   GitHubRepoImportResult,
   GitHubSkillImportSelection,
@@ -47,6 +49,9 @@ interface MarketplaceState {
   installingIds: Set<string>;
   error: string | null;
   githubImport: GitHubImportState;
+  skillsShResults: SkillsShSkill[];
+  skillsShQuery: string;
+  isSkillsShLoading: boolean;
 
   loadRegistries: () => Promise<void>;
   selectRegistry: (id: string) => void;
@@ -54,7 +59,18 @@ interface MarketplaceState {
   syncRegistry: (registryId: string, forceRefresh?: boolean) => Promise<void>;
   loadSkills: (registryId: string, query?: string) => Promise<void>;
   loadPreviewSkills: (registryId: string) => Promise<MarketplaceSkill[]>;
-  installSkill: (skillId: string) => Promise<void>;
+  installSkill: (
+    skillId: string,
+    collectionId?: string,
+    collectionName?: string,
+  ) => Promise<MarketplaceInstallResult>;
+  importSkillFromUrl: (
+    name: string,
+    downloadUrl: string,
+    source?: string | null,
+    collectionId?: string,
+    collectionName?: string,
+  ) => Promise<MarketplaceInstallResult>;
   addRegistry: (name: string, sourceType: string, url: string) => Promise<SkillRegistry>;
   removeRegistry: (registryId: string) => Promise<void>;
   getNormalizedRegistryIdentity: (url: string) => string | null;
@@ -75,6 +91,13 @@ interface MarketplaceState {
     refresh?: boolean
   ) => Promise<void>;
   resetGitHubImport: () => void;
+  searchSkillsSh: (query: string) => Promise<void>;
+  installFromSkillsSh: (
+    source: string,
+    skillId: string,
+    collectionId?: string,
+    collectionName?: string,
+  ) => Promise<MarketplaceInstallResult>;
 }
 
 const initialGitHubImportState = (): GitHubImportState => ({
@@ -141,6 +164,9 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   installingIds: new Set(),
   error: null,
   githubImport: initialGitHubImportState(),
+  skillsShResults: [],
+  skillsShQuery: "",
+  isSkillsShLoading: false,
 
   getNormalizedRegistryIdentity: (url: string) => {
     const trimmed = url.trim();
@@ -245,11 +271,21 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     });
   },
 
-  installSkill: async (skillId: string) => {
+  installSkill: async (
+    skillId: string,
+    collectionId?: string,
+    collectionName?: string,
+  ) => {
     set((s) => ({ installingIds: new Set(s.installingIds).add(skillId) }));
     try {
-      await invoke("install_marketplace_skill", { skillId });
-      // Update the skill's is_installed status locally
+      const result = await invoke<MarketplaceInstallResult>(
+        "install_marketplace_skill_to_collection",
+        {
+          skillId,
+          collectionId: collectionId ?? null,
+          collectionName: collectionName ?? null,
+        },
+      );
       set((s) => ({
         skills: s.skills.map((sk) =>
           sk.id === skillId ? { ...sk, is_installed: true } : sk
@@ -260,10 +296,47 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           return next;
         })(),
       }));
+      return result;
     } catch (err) {
       set((s) => {
         const next = new Set(s.installingIds);
         next.delete(skillId);
+        return { installingIds: next, error: String(err) };
+      });
+      throw err;
+    }
+  },
+
+  importSkillFromUrl: async (
+    name: string,
+    downloadUrl: string,
+    source?: string | null,
+    collectionId?: string,
+    collectionName?: string,
+  ) => {
+    const installingKey = `url:${downloadUrl}`;
+    set((s) => ({ installingIds: new Set(s.installingIds).add(installingKey) }));
+    try {
+      const result = await invoke<MarketplaceInstallResult>(
+        "import_marketplace_skill_from_url",
+        {
+          name,
+          downloadUrl,
+          source: source ?? null,
+          collectionId: collectionId ?? null,
+          collectionName: collectionName ?? null,
+        },
+      );
+      set((s) => {
+        const next = new Set(s.installingIds);
+        next.delete(installingKey);
+        return { installingIds: next };
+      });
+      return result;
+    } catch (err) {
+      set((s) => {
+        const next = new Set(s.installingIds);
+        next.delete(installingKey);
         return { installingIds: next, error: String(err) };
       });
       throw err;
@@ -403,12 +476,18 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     try {
       await setupGitHubImportEventListeners(set);
 
-      const importResult = await invoke<GitHubRepoImportResult>("import_github_repo_skills", {
-        repoUrl,
-        selections,
-        collectionId: collectionId ?? null,
-        collectionName: collectionName ?? null,
-      });
+      const importPayload: {
+        repoUrl: string;
+        selections: GitHubSkillImportSelection[];
+        collectionId?: string;
+        collectionName?: string;
+      } = { repoUrl, selections };
+      if (collectionId !== undefined) importPayload.collectionId = collectionId;
+      if (collectionName !== undefined) importPayload.collectionName = collectionName;
+      const importResult = await invoke<GitHubRepoImportResult>(
+        "import_github_repo_skills",
+        importPayload,
+      );
       set((state) => ({
         githubImport: {
           ...state.githubImport,
@@ -635,6 +714,51 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           },
         },
       }));
+    }
+  },
+
+  searchSkillsSh: async (query: string) => {
+    set({ skillsShQuery: query, isSkillsShLoading: true, error: null });
+    try {
+      const results = await invoke<SkillsShSkill[]>("search_skills_sh", {
+        query,
+        limit: 20,
+      });
+      set({ skillsShResults: results ?? [], isSkillsShLoading: false });
+    } catch (err) {
+      set({ error: String(err), isSkillsShLoading: false });
+      throw err;
+    }
+  },
+
+  installFromSkillsSh: async (
+    source: string,
+    skillId: string,
+    collectionId?: string,
+    collectionName?: string,
+  ) => {
+    const installingKey = `skillssh:${source}:${skillId}`;
+    set((s) => ({ installingIds: new Set(s.installingIds).add(installingKey) }));
+    try {
+      const result = await invoke<MarketplaceInstallResult>("install_from_skills_sh", {
+        source,
+        skillId,
+        collectionId: collectionId ?? null,
+        collectionName: collectionName ?? null,
+      });
+      set((s) => {
+        const next = new Set(s.installingIds);
+        next.delete(installingKey);
+        return { installingIds: next };
+      });
+      return result;
+    } catch (err) {
+      set((s) => {
+        const next = new Set(s.installingIds);
+        next.delete(installingKey);
+        return { installingIds: next, error: String(err) };
+      });
+      throw err;
     }
   },
 
