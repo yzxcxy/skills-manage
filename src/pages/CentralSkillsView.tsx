@@ -23,6 +23,7 @@ import { CollectionEditor } from "@/components/collection/CollectionEditor";
 import { CollectionInstallDialog } from "@/components/collection/CollectionInstallDialog";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { cn } from "@/lib/utils";
+import { formatPathForDisplay } from "@/lib/path";
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
@@ -249,7 +250,18 @@ export function CentralSkillsView() {
       <div className="border-b border-border px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold">{t("sidebar.centralSkills")}</h1>
+            <div>
+              <h1 className="text-xl font-semibold">{t("sidebar.centralSkills")}</h1>
+              {(() => {
+                const centralAgent = agents.find((a) => a.id === "central");
+                if (!centralAgent) return null;
+                return (
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    {formatPathForDisplay(centralAgent.global_skills_dir)}
+                  </p>
+                );
+              })()}
+            </div>
             <Button
               variant="ghost"
               size="icon"

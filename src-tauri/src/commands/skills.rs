@@ -619,29 +619,11 @@ fn installation_details(installations: Vec<db::SkillInstallation>) -> Vec<SkillI
 }
 
 async fn read_only_agent_ids_for_skill(
-    pool: &DbPool,
-    skill_id: &str,
-    is_central: bool,
+    _pool: &DbPool,
+    _skill_id: &str,
+    _is_central: bool,
 ) -> Result<Vec<String>, String> {
-    let mut agent_ids: BTreeSet<String> =
-        db::get_read_only_observed_agent_ids_for_skill(pool, skill_id)
-            .await?
-            .into_iter()
-            .collect();
-
-    if is_central {
-        for agent in db::get_all_agents(pool).await? {
-            if agent.is_enabled && db::agent_supports_universal_agents_skills(&agent.id) {
-                agent_ids.insert(agent.id);
-            }
-        }
-    }
-
-    for installation in db::get_skill_installations(pool, skill_id).await? {
-        agent_ids.remove(&installation.agent_id);
-    }
-
-    Ok(agent_ids.into_iter().collect())
+    Ok(Vec::new())
 }
 
 async fn get_observation_detail(
@@ -1276,15 +1258,6 @@ mod tests {
         pool
     }
 
-    fn expected_universal_read_only_agents(extra: &[&str]) -> Vec<String> {
-        let agent_ids = db::UNIVERSAL_AGENTS_SKILLS_AGENT_IDS
-            .iter()
-            .chain(extra.iter())
-            .map(|agent_id| (*agent_id).to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        agent_ids.into_iter().collect()
-    }
-
     fn make_skill(id: &str, name: &str, is_central: bool) -> Skill {
         Skill {
             id: id.to_string(),
@@ -1544,40 +1517,6 @@ mod tests {
         assert!(
             skills_with_links[0].linked_agents.is_empty(),
             "plugin observations must not pollute linked_agents state"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_central_skills_reports_factory_compatibility_as_read_only_agent() {
-        let pool = setup_test_db().await;
-
-        let central_skill = make_skill("shared-skill", "Shared Skill", true);
-        db::upsert_skill(&pool, &central_skill).await.unwrap();
-        db::upsert_agent_skill_observation(
-            &pool,
-            &make_observation_for_agent(
-                "factory-droid",
-                "factory-droid::/tmp/.agents/skills/shared-skill",
-                "shared-skill",
-                "Shared Skill",
-                "/tmp/.agents/skills/shared-skill",
-                "compatibility",
-                "/tmp/.agents/skills",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-
-        let skills_with_links = get_central_skills_impl(&pool).await.unwrap();
-        assert_eq!(skills_with_links.len(), 1);
-        assert!(
-            skills_with_links[0].linked_agents.is_empty(),
-            "read-only compatibility observations are not removable installation links"
-        );
-        assert_eq!(
-            skills_with_links[0].read_only_agents,
-            expected_universal_read_only_agents(&["factory-droid"])
         );
     }
 
@@ -2475,86 +2414,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_skills_by_agent_impl_includes_generic_read_only_observations() {
-        let pool = setup_test_db().await;
-
-        let skill = make_skill("shared-skill", "Shared Skill", true);
-        db::upsert_skill(&pool, &skill).await.unwrap();
-        db::upsert_agent_skill_observation(
-            &pool,
-            &make_observation_for_agent(
-                "factory-droid",
-                "factory-droid::/tmp/.agents/skills/shared-skill",
-                "shared-skill",
-                "Shared Skill",
-                "/tmp/.agents/skills/shared-skill",
-                "compatibility",
-                "/tmp/.agents/skills",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-
-        let skills = get_skills_by_agent_impl(&pool, "factory-droid")
-            .await
-            .unwrap();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "shared-skill");
-        assert_eq!(skills[0].source_kind.as_deref(), Some("compatibility"));
-        assert!(skills[0].is_read_only);
-        assert_eq!(
-            skills[0].source_root.as_deref(),
-            Some("/tmp/.agents/skills")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_skills_by_agent_impl_prefers_manageable_install_over_read_only_observation() {
-        let pool = setup_test_db().await;
-
-        let skill = make_skill("shared-skill", "Shared Skill", false);
-        db::upsert_skill(&pool, &skill).await.unwrap();
-        db::upsert_skill_installation(
-            &pool,
-            &SkillInstallation {
-                skill_id: "shared-skill".to_string(),
-                agent_id: "factory-droid".to_string(),
-                installed_path: "/tmp/.factory/skills/shared-skill".to_string(),
-                link_type: "copy".to_string(),
-                symlink_target: None,
-                created_at: Utc::now().to_rfc3339(),
-            },
-        )
-        .await
-        .unwrap();
-        db::upsert_agent_skill_observation(
-            &pool,
-            &make_observation_for_agent(
-                "factory-droid",
-                "factory-droid::/tmp/.agents/skills/shared-skill",
-                "shared-skill",
-                "Shared Skill",
-                "/tmp/.agents/skills/shared-skill",
-                "compatibility",
-                "/tmp/.agents/skills",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-
-        let skills = get_skills_by_agent_impl(&pool, "factory-droid")
-            .await
-            .unwrap();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "shared-skill");
-        assert!(!skills[0].is_read_only);
-        assert_eq!(skills[0].dir_path, "/tmp/.factory/skills/shared-skill");
-        assert!(skills[0].source_kind.is_none());
-    }
-
-    #[tokio::test]
     async fn test_get_skill_detail_with_row_impl_claude_plugin_row_uses_selected_observation() {
         let pool = setup_test_db().await;
 
@@ -2719,54 +2578,6 @@ mod tests {
         assert_eq!(detail.conflict_count, 2);
         assert_eq!(detail.installations.len(), 1);
         assert_eq!(detail.collections.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_get_skill_detail_with_row_impl_factory_compatibility_row_is_read_only() {
-        let pool = setup_test_db().await;
-
-        let skill = make_skill("shared-skill", "Shared Skill", true);
-        db::upsert_skill(&pool, &skill).await.unwrap();
-        db::upsert_agent_skill_observation(
-            &pool,
-            &make_observation_for_agent(
-                "factory-droid",
-                "factory-droid::/tmp/.agents/skills/shared-skill",
-                "shared-skill",
-                "Shared Skill",
-                "/tmp/.agents/skills/shared-skill",
-                "compatibility",
-                "/tmp/.agents/skills",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-
-        let detail = get_skill_detail_with_row_impl(
-            &pool,
-            "shared-skill",
-            Some("factory-droid"),
-            Some("factory-droid::/tmp/.agents/skills/shared-skill"),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            detail.row_id,
-            "factory-droid::/tmp/.agents/skills/shared-skill"
-        );
-        assert_eq!(detail.source_kind.as_deref(), Some("compatibility"));
-        assert_eq!(detail.source_root.as_deref(), Some("/tmp/.agents/skills"));
-        assert!(detail.is_read_only);
-        assert!(
-            detail.installations.is_empty(),
-            "Factory .agents compatibility rows must not expose removable install records"
-        );
-        assert!(
-            detail.collections.is_empty(),
-            "read-only compatibility rows should not expose collection mutation state"
-        );
     }
 
     #[tokio::test]

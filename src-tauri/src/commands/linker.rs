@@ -237,22 +237,6 @@ async fn existing_install_path_for_agent(
         .map(|installation| installation.installed_path))
 }
 
-async fn universal_available_install_result(
-    pool: &DbPool,
-    skill_id: &str,
-    agent_id: &str,
-    canonical_dir: &Path,
-) -> Result<Option<InstallResult>, String> {
-    if !db::agent_supports_universal_agents_skills(agent_id) {
-        return Ok(None);
-    }
-
-    let symlink_path = existing_install_path_for_agent(pool, skill_id, agent_id)
-        .await?
-        .unwrap_or_else(|| canonical_dir.to_string_lossy().into_owned());
-    Ok(Some(InstallResult { symlink_path }))
-}
-
 // ─── Core Logic ───────────────────────────────────────────────────────────────
 
 /// Core install logic, separated from the Tauri layer for testability.
@@ -290,12 +274,6 @@ pub async fn install_skill_to_agent_impl(
 
     // 3. Ensure the skill exists in central (auto-centralize if needed).
     ensure_centralized(pool, skill_id, &canonical_dir).await?;
-
-    if let Some(result) =
-        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
-    {
-        return Ok(result);
-    }
 
     // 4. Compute symlink location.
     let agent_dir = PathBuf::from(&agent.global_skills_dir);
@@ -404,12 +382,6 @@ pub async fn install_skill_to_agent_copy_impl(
     // 3. Ensure the skill exists in central (auto-centralize if needed).
     ensure_centralized(pool, skill_id, &canonical_dir).await?;
 
-    if let Some(result) =
-        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
-    {
-        return Ok(result);
-    }
-
     // 4. Compute target location.
     let agent_dir = PathBuf::from(&agent.global_skills_dir);
     let target_path = agent_dir.join(skill_id);
@@ -480,9 +452,6 @@ pub async fn uninstall_skill_from_agent_impl(
     // 2. Look up the installation record to determine where and how it was installed.
     let installations = db::get_skill_installations(pool, skill_id).await?;
     let record = installations.iter().find(|r| r.agent_id == agent_id);
-    if record.is_none() && db::agent_supports_universal_agents_skills(agent_id) {
-        return Ok(());
-    }
     let install_path = record
         .map(|r| PathBuf::from(&r.installed_path))
         .unwrap_or_else(|| PathBuf::from(&agent.global_skills_dir).join(skill_id));
@@ -680,47 +649,6 @@ mod tests {
         let symlink_path = agent_dir.join("my-skill");
         let meta = fs::symlink_metadata(&symlink_path).unwrap();
         assert!(meta.file_type().is_symlink(), "entry should be a symlink");
-    }
-
-    #[tokio::test]
-    async fn test_install_to_universal_agent_returns_central_availability_without_link() {
-        let tmp = TempDir::new().unwrap();
-        let central_dir = tmp.path().join(".agents/skills");
-        let codex_dir = tmp.path().join(".codex/skills");
-        fs::create_dir_all(&central_dir).unwrap();
-
-        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
-            .bind(codex_dir.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-        create_central_skill(&central_dir, "universal-skill");
-
-        let result = install_skill_to_agent_impl(&pool, "universal-skill", "codex")
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result.symlink_path,
-            central_dir
-                .join("test-collection")
-                .join("universal-skill")
-                .to_string_lossy()
-                .into_owned()
-        );
-        assert!(
-            !codex_dir.join("universal-skill").exists(),
-            "universal agents must not receive redundant links for central skills"
-        );
-        assert!(
-            db::get_skill_installations(&pool, "universal-skill")
-                .await
-                .unwrap()
-                .into_iter()
-                .all(|installation| installation.agent_id != "codex"),
-            "universal availability must not create removable installation rows"
-        );
     }
 
     #[tokio::test]
@@ -1061,24 +989,6 @@ mod tests {
             .await
             .unwrap();
         assert!(installations.is_empty(), "DB record should be cleaned up");
-    }
-
-    #[tokio::test]
-    async fn test_uninstall_universal_availability_without_record_is_noop() {
-        let tmp = TempDir::new().unwrap();
-        let central_dir = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&central_dir).unwrap();
-        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
-        create_central_skill(&central_dir, "universal-skill");
-
-        uninstall_skill_from_agent_impl(&pool, "universal-skill", "cursor")
-            .await
-            .unwrap();
-
-        assert!(
-            central_dir.join("test-collection").join("universal-skill").join("SKILL.md").exists(),
-            "uninstalling read-only universal availability must not delete the central skill"
-        );
     }
 
     #[tokio::test]

@@ -754,12 +754,12 @@ fn scan_obsidian_vault(vault_dir: &Path, central_dir: &Path) -> Option<Discovere
     let project_name = file_name_or_unknown(vault_dir);
     let mut selected_by_skill_id: BTreeMap<String, DiscoveredSkill> = BTreeMap::new();
 
-    // Priority order is intentional: .skills wins over .agents/skills, which
+    // Priority order is intentional: .skills wins over .codex/skills, which
     // wins over .claude/skills. Invalid directories are skipped by
     // scanner::scan_directory and therefore never reserve a dedupe key.
     for rel_source in [
         PathBuf::from(".skills"),
-        PathBuf::from(".agents/skills"),
+        PathBuf::from(".codex/skills"),
         PathBuf::from(".claude/skills"),
     ] {
         let source_dir = vault_dir.join(rel_source);
@@ -1726,9 +1726,9 @@ mod tests {
     const CROSS_AREA_FIXTURE_SKILL_DESCRIPTION: &str = "Correlated fixture skill";
     const CROSS_AREA_FIXTURE_SKILL_ID: &str = "obsidian__ef800504428ee0cc__money-researcher";
     const CROSS_AREA_FIXTURE_SOURCE_DIR: &str =
-        "/tmp/skills-manage-val-cross-012/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.agents/skills/money-researcher";
+        "/tmp/skills-manage-val-cross-012/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.codex/skills/money-researcher";
     const CROSS_AREA_FIXTURE_SOURCE_FILE: &str =
-        "/tmp/skills-manage-val-cross-012/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.agents/skills/money-researcher/SKILL.md";
+        "/tmp/skills-manage-val-cross-012/Library/Mobile Documents/iCloud~md~obsidian/Documents/make-money/.codex/skills/money-researcher/SKILL.md";
     const CROSS_AREA_FIXTURE_CENTRAL_TARGET: &str =
         "/tmp/skills-manage-val-cross-012/central/money-researcher";
     const CROSS_AREA_FIXTURE_SYMLINK_TARGET: &str =
@@ -1841,7 +1841,7 @@ mod tests {
             (
                 "codex".to_string(),
                 "Codex CLI".to_string(),
-                PathBuf::from(".agents/skills"),
+                PathBuf::from(".codex/skills"),
             ),
             (
                 "claude-code".to_string(),
@@ -1992,7 +1992,7 @@ mod tests {
 
         let vault_dir = tmp.path().join("vault");
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
-        let skill_dir = vault_dir.join(".agents/skills/research-helper");
+        let skill_dir = vault_dir.join(".codex/skills/research-helper");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -2003,7 +2003,7 @@ mod tests {
         let patterns = vec![(
             "codex".to_string(),
             "Codex CLI".to_string(),
-            PathBuf::from(".agents/skills"),
+            PathBuf::from(".codex/skills"),
         )];
 
         let projects = scan_root_for_projects(&vault_dir, &patterns, &central_dir);
@@ -2126,7 +2126,7 @@ mod tests {
         }
         std::fs::create_dir_all(&central_dir).unwrap();
         create_skill(
-            &make_money.join(".agents/skills"),
+            &make_money.join(".codex/skills"),
             "money-researcher",
             "Money Researcher",
             "Only populated vault",
@@ -2156,13 +2156,13 @@ mod tests {
         std::fs::create_dir_all(nested.join(".obsidian")).unwrap();
         std::fs::create_dir_all(&central_dir).unwrap();
         create_skill(
-            &happy.join(".agents/skills"),
+            &happy.join(".codex/skills"),
             "happy-skill",
             "Happy Skill",
             "Allowed direct child vault",
         );
         create_skill(
-            &nested.join(".agents/skills"),
+            &nested.join(".codex/skills"),
             "nested-skill",
             "Nested Skill",
             "Not a direct iCloud child vault",
@@ -2532,10 +2532,10 @@ mod tests {
             "From .skills",
         );
         create_skill(
-            &vault_dir.join(".agents/skills"),
-            "agents-skill",
-            "Agents Skill",
-            "From .agents",
+            &vault_dir.join(".codex/skills"),
+            "codex-skill",
+            "Codex Skill",
+            "From .codex",
         );
         create_skill(
             &vault_dir.join(".claude/skills"),
@@ -2546,7 +2546,7 @@ mod tests {
 
         let ordinary_dir = tmp.path().join("ordinary-project");
         create_skill(
-            &ordinary_dir.join(".agents/skills"),
+            &ordinary_dir.join(".codex/skills"),
             "ordinary-skill",
             "Ordinary Skill",
             "No vault marker",
@@ -2571,7 +2571,7 @@ mod tests {
             .map(|skill| selected_skill_dir_name(&skill.dir_path))
             .collect();
         assert!(selected_dirs.contains(&"native-skill".to_string()));
-        assert!(selected_dirs.contains(&"agents-skill".to_string()));
+        assert!(selected_dirs.contains(&"codex-skill".to_string()));
         assert!(selected_dirs.contains(&"claude-skill".to_string()));
 
         let ordinary = projects
@@ -2598,10 +2598,10 @@ mod tests {
             "native",
         );
         create_skill(
-            &vault_dir.join(".agents/skills"),
+            &vault_dir.join(".codex/skills"),
             "shared",
-            "Shared Agents",
-            "agents",
+            "Shared Codex",
+            "codex",
         );
         create_skill(
             &vault_dir.join(".claude/skills"),
@@ -2624,12 +2624,12 @@ mod tests {
         assert!(
             projects[0].skills[0]
                 .dir_path
-                .contains(".agents/skills/shared"),
-            ".agents/skills should win when .skills is absent"
+                .contains(".codex/skills/shared"),
+            ".codex/skills should win when .skills is absent"
         );
 
-        std::fs::remove_dir_all(vault_dir.join(".agents/skills/shared")).unwrap();
-        create_invalid_skill(&vault_dir.join(".agents/skills"), "shared");
+        std::fs::remove_dir_all(vault_dir.join(".codex/skills/shared")).unwrap();
+        create_invalid_skill(&vault_dir.join(".codex/skills"), "shared");
         let projects = scan_for_test(&vault_dir, &central_dir);
         assert_eq!(projects[0].skills.len(), 1);
         assert!(
@@ -3023,7 +3023,7 @@ mod tests {
         let vault_dir = PathBuf::from(CROSS_AREA_FIXTURE_VAULT_PATH);
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
         let source_skill_dir = create_skill(
-            &vault_dir.join(".agents/skills"),
+            &vault_dir.join(".codex/skills"),
             CROSS_AREA_FIXTURE_SKILL_DIR_NAME,
             CROSS_AREA_FIXTURE_SKILL_NAME,
             CROSS_AREA_FIXTURE_SKILL_DESCRIPTION,
@@ -3049,7 +3049,7 @@ mod tests {
             )
             .unwrap();
             std::os::unix::fs::symlink(
-                vault_dir.join(".agents/skills/missing-target"),
+                vault_dir.join(".codex/skills/missing-target"),
                 vault_dir.join(".claude/skills/broken-money-researcher"),
             )
             .unwrap();
@@ -3281,7 +3281,7 @@ mod tests {
         let vault_dir = tmp.path().join("make-money");
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
         let skill_dir = create_skill(
-            &vault_dir.join(".agents/skills"),
+            &vault_dir.join(".codex/skills"),
             "platform-methods",
             "Platform Methods",
             "Install method fixture",
@@ -3982,8 +3982,8 @@ mod tests {
         assert!(
             patterns
                 .iter()
-                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".agents/skills")),
-            "the shared .agents/skills pattern should be discoverable once"
+                .any(|(_, _, rel_path)| rel_path == &PathBuf::from(".codex/skills")),
+            "the .codex/skills pattern should be discoverable as Codex CLI's platform directory"
         );
 
         let mut seen_paths = HashSet::new();
@@ -4711,7 +4711,7 @@ mod tests {
         let vault_dir = tmp.path().join("vault");
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
         let lower_priority = create_skill(
-            &vault_dir.join(".agents/skills"),
+            &vault_dir.join(".codex/skills"),
             "changing-skill",
             "Changing Skill",
             "old description",
@@ -4958,7 +4958,7 @@ mod tests {
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
         create_invalid_skill(&vault_dir.join(".skills"), "deduped");
         create_skill(
-            &vault_dir.join(".agents/skills"),
+            &vault_dir.join(".codex/skills"),
             "deduped",
             "Deduped Skill",
             "valid fallback",

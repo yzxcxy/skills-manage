@@ -64,7 +64,6 @@ impl ScanDirectoryOptions {
 enum AgentSkillSourceKind {
     User,
     Plugin,
-    Compatibility,
 }
 
 impl AgentSkillSourceKind {
@@ -72,12 +71,11 @@ impl AgentSkillSourceKind {
         match self {
             Self::User => "user",
             Self::Plugin => "plugin",
-            Self::Compatibility => "compatibility",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Plugin | Self::Compatibility)
+        matches!(self, Self::Plugin)
     }
 }
 
@@ -549,44 +547,10 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
     roots
 }
 
-fn agents_skills_compatibility_root(primary_root: &Path) -> Option<PathBuf> {
-    primary_root
-        .parent()
-        .and_then(Path::parent)
-        .map(|home_root| home_root.join(".agents/skills"))
-}
-
-fn compatibility_scan_root(path: PathBuf) -> AgentScanRoot {
-    AgentScanRoot {
-        path: path.clone(),
-        source_root: Some(path),
-        source_kind: Some(AgentSkillSourceKind::Compatibility),
-    }
-}
-
-fn push_unique_scan_root(roots: &mut Vec<AgentScanRoot>, root: AgentScanRoot) {
-    if roots.iter().any(|existing| existing.path == root.path) {
-        return;
-    }
-    roots.push(root);
-}
-
 fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
     let primary_root = PathBuf::from(&agent.global_skills_dir);
 
-    let compatibility_root = agents_skills_compatibility_root(&primary_root);
-    if db::agent_supports_universal_agents_skills(&agent.id)
-        && compatibility_root
-            .as_ref()
-            .is_some_and(|root| root == &primary_root)
-    {
-        return compatibility_root
-            .map(compatibility_scan_root)
-            .into_iter()
-            .collect();
-    }
-
-    let mut roots = match agent.id.as_str() {
+    match agent.id.as_str() {
         "claude-code" => {
             let mut roots = vec![AgentScanRoot {
                 path: primary_root.clone(),
@@ -601,17 +565,7 @@ fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
             source_root: None,
             source_kind: None,
         }],
-    };
-
-    if agent.id == "factory-droid" || db::agent_supports_universal_agents_skills(&agent.id) {
-        if let Some(compatibility_root) = compatibility_root {
-            if compatibility_root != primary_root {
-                push_unique_scan_root(&mut roots, compatibility_scan_root(compatibility_root));
-            }
-        }
     }
-
-    roots
 }
 
 fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
@@ -717,7 +671,13 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                     };
                     let collection_id = match inferred_collection_id {
                         Some(cid) if db::get_collection_by_id(pool, &cid).await?.is_some() => cid,
-                        _ => db::ensure_default_collection(pool).await?.id,
+                        _ => {
+                            if is_central {
+                                db::ensure_default_collection(pool).await?.id
+                            } else {
+                                String::new()
+                            }
+                        }
                     };
 
                     let db_skill = Skill {
@@ -777,14 +737,13 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         }
 
         let scanned = scan_skill_root(dir, false, ScanDirectoryOptions::nested());
-        let default_col = db::ensure_default_collection(pool).await?;
         for skill in &scanned {
             all_found_skill_ids.insert(skill.id.clone());
             let now = Utc::now().to_rfc3339();
             let db_skill = Skill {
                 id: skill.id.clone(),
                 name: skill.name.clone(),
-                collection_id: default_col.id.clone(),
+                collection_id: String::new(),
                 description: skill.description.clone(),
                 file_path: skill.file_path.clone(),
                 canonical_path: None,
@@ -1847,269 +1806,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scan_all_skills_impl_factory_droid_observes_agents_skills_read_only() {
-        let tmp = TempDir::new().unwrap();
-        let pool = setup_test_db().await;
-
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('factory-droid', 'central')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM scan_directories")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let factory_root = tmp.path().join(".factory/skills");
-        let shared_root = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&factory_root).unwrap();
-        fs::create_dir_all(&shared_root).unwrap();
-
-        create_skill_dir(
-            &shared_root.join("superpowers"),
-            "using-superpowers",
-            &valid_skill_md("Using Superpowers", "Shared Factory-compatible skill"),
-        );
-
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'factory-droid'")
-            .bind(factory_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
-            .bind(shared_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let result = scan_all_skills_impl(&pool).await.unwrap();
-
-        assert_eq!(
-            result.skills_by_agent.get("factory-droid").copied(),
-            Some(1)
-        );
-        let observations = db::get_agent_skill_observations(&pool, "factory-droid")
-            .await
-            .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].skill_id, "using-superpowers");
-        assert_eq!(observations[0].source_kind, "compatibility");
-        assert!(observations[0].is_read_only);
-        assert!(observations[0]
-            .dir_path
-            .contains("superpowers/using-superpowers"));
-
-        let platform_skills = db::get_skills_for_agent(&pool, "factory-droid")
-            .await
-            .unwrap();
-        assert_eq!(platform_skills.len(), 1);
-        assert_eq!(platform_skills[0].id, "using-superpowers");
-        assert!(platform_skills[0].is_read_only);
-
-        let factory_installations: Vec<_> = db::get_skill_installations(&pool, "using-superpowers")
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|installation| installation.agent_id == "factory-droid")
-            .collect();
-        assert!(
-            factory_installations.is_empty(),
-            "shared .agents skills must not be persisted as removable Factory Droid installs"
-        );
-
-        let skill = db::get_skill_by_id(&pool, "using-superpowers")
-            .await
-            .unwrap()
-            .expect("central scan should persist the shared skill");
-        assert!(skill.is_central);
-        assert_eq!(
-            skill.canonical_path.as_deref(),
-            Some(
-                shared_root
-                    .join("superpowers/using-superpowers")
-                    .to_string_lossy()
-                    .as_ref()
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn test_scan_all_skills_impl_universal_agent_observes_agents_skills_read_only() {
-        let tmp = TempDir::new().unwrap();
-        let pool = setup_test_db().await;
-
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('codex', 'central')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM scan_directories")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let codex_root = tmp.path().join(".codex/skills");
-        let shared_root = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&codex_root).unwrap();
-        fs::create_dir_all(&shared_root).unwrap();
-
-        create_skill_dir(
-            &shared_root,
-            "shared-skill",
-            &valid_skill_md("Shared Skill", "Universal compatibility skill"),
-        );
-
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
-            .bind(codex_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
-            .bind(shared_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let result = scan_all_skills_impl(&pool).await.unwrap();
-
-        assert_eq!(result.skills_by_agent.get("codex").copied(), Some(1));
-        let observations = db::get_agent_skill_observations(&pool, "codex")
-            .await
-            .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].source_kind, "compatibility");
-        assert!(observations[0].is_read_only);
-
-        let codex_installations: Vec<_> = db::get_skill_installations(&pool, "shared-skill")
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|installation| installation.agent_id == "codex")
-            .collect();
-        assert!(
-            codex_installations.is_empty(),
-            "shared .agents skills must not be persisted as removable universal-agent installs"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_scan_all_skills_impl_universal_primary_agents_skills_is_read_only() {
-        let tmp = TempDir::new().unwrap();
-        let pool = setup_test_db().await;
-
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('codex', 'central')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM scan_directories")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let shared_root = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&shared_root).unwrap();
-        create_skill_dir(
-            &shared_root,
-            "native-universal-skill",
-            &valid_skill_md("Native Universal Skill", "Primary root is shared"),
-        );
-
-        sqlx::query(
-            "UPDATE agents SET global_skills_dir = ? WHERE id IN ('codex', 'central')",
-        )
-        .bind(shared_root.to_string_lossy().to_string())
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        scan_all_skills_impl(&pool).await.unwrap();
-
-        let observations = db::get_agent_skill_observations(&pool, "codex")
-            .await
-            .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].source_kind, "compatibility");
-        assert!(observations[0].is_read_only);
-
-        let codex_installations: Vec<_> =
-            db::get_skill_installations(&pool, "native-universal-skill")
-                .await
-                .unwrap()
-                .into_iter()
-                .filter(|installation| installation.agent_id == "codex")
-                .collect();
-        assert!(
-            codex_installations.is_empty(),
-            "universal platforms that use .agents/skills as primary root must remain read-only"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_scan_all_skills_impl_factory_droid_primary_root_wins_over_shared_duplicate() {
-        let tmp = TempDir::new().unwrap();
-        let pool = setup_test_db().await;
-
-        sqlx::query("DELETE FROM agents WHERE id NOT IN ('factory-droid', 'central')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM scan_directories")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let factory_root = tmp.path().join(".factory/skills");
-        let shared_root = tmp.path().join(".agents/skills");
-        fs::create_dir_all(&factory_root).unwrap();
-        fs::create_dir_all(&shared_root).unwrap();
-
-        create_skill_dir(
-            &factory_root,
-            "shared-skill",
-            &valid_skill_md("Factory Skill", "Factory-specific copy"),
-        );
-        create_skill_dir(
-            &shared_root,
-            "shared-skill",
-            &valid_skill_md("Central Skill", "Shared compatibility copy"),
-        );
-
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'factory-droid'")
-            .bind(factory_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
-            .bind(shared_root.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        scan_all_skills_impl(&pool).await.unwrap();
-
-        let factory_installation = db::get_skill_installations(&pool, "shared-skill")
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|installation| installation.agent_id == "factory-droid")
-            .expect("Factory Droid primary root should remain a manageable install");
-        assert_eq!(
-            factory_installation.installed_path,
-            factory_root.join("shared-skill").to_string_lossy()
-        );
-
-        let platform_skills = db::get_skills_for_agent(&pool, "factory-droid")
-            .await
-            .unwrap();
-        assert_eq!(platform_skills.len(), 1);
-        assert_eq!(platform_skills[0].id, "shared-skill");
-        assert!(!platform_skills[0].is_read_only);
-        assert_eq!(
-            platform_skills[0].dir_path,
-            factory_root.join("shared-skill").to_string_lossy()
-        );
-    }
-
-    #[tokio::test]
     #[ignore = "manual isolated-home sanity check"]
     async fn test_scan_all_skills_impl_claude_fixture_home_sanity() {
         let fixture_home = Path::new("/tmp/skills-manage-test-fixtures/claude-multi-source");
@@ -2504,6 +2200,97 @@ mod tests {
             skill.is_central,
             "skill should remain is_central=true even when a coding agent \
              scans the same directory after the central agent"
+        );
+    }
+
+    // ── Bug regression: default collection must only contain central skills ───
+
+    #[tokio::test]
+    async fn test_default_collection_excludes_platform_only_skills() {
+        use crate::db;
+
+        let tmp_central = TempDir::new().unwrap();
+        let tmp_platform = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        // Remove all seeded agents and scan directories so the test is
+        // isolated from the host machine.
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Insert central agent pointing to our temp dir.
+        let central_agent = db::Agent {
+            id: "central".to_string(),
+            display_name: "Central".to_string(),
+            category: "central".to_string(),
+            global_skills_dir: tmp_central.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &central_agent)
+            .await
+            .unwrap();
+
+        // Add a platform agent.
+        let platform_agent = db::Agent {
+            id: "test-platform".to_string(),
+            display_name: "Test Platform".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: tmp_platform.path().to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &platform_agent)
+            .await
+            .unwrap();
+
+        // Central layout: collection_dir / skill_dir / SKILL.md
+        // The collection does NOT exist in the DB, so the skill must fall back
+        // to the default collection.
+        let unknown_collection_dir = tmp_central.path().join("unknown-collection");
+        fs::create_dir_all(&unknown_collection_dir).unwrap();
+        create_skill_dir(
+            &unknown_collection_dir,
+            "orphan-central",
+            &valid_skill_md("Orphan Central", "No collection"),
+        );
+
+        // Platform layout: skill_dir / SKILL.md
+        create_skill_dir(
+            tmp_platform.path(),
+            "platform-only",
+            &valid_skill_md("Platform Only", "Only on platform"),
+        );
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let default_col = db::ensure_default_collection(&pool).await.unwrap();
+        let default_skills = db::get_collection_skills(&pool, &default_col.id)
+            .await
+            .unwrap();
+
+        // The default collection should ONLY contain central skills.
+        assert_eq!(
+            default_skills.len(),
+            1,
+            "default collection should contain exactly 1 central skill"
+        );
+        assert_eq!(default_skills[0].id, "orphan-central");
+        assert!(
+            default_skills[0].is_central,
+            "default collection should only contain central skills"
         );
     }
 }

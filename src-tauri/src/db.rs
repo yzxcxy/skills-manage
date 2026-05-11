@@ -604,10 +604,8 @@ async fn ensure_column(
     Ok(())
 }
 
-pub const UNIVERSAL_AGENTS_SKILLS_AGENT_IDS: &[&str] = &["codex"];
-
-pub fn agent_supports_universal_agents_skills(agent_id: &str) -> bool {
-    UNIVERSAL_AGENTS_SKILLS_AGENT_IDS.contains(&agent_id)
+pub fn agent_supports_universal_agents_skills(_agent_id: &str) -> bool {
+    false
 }
 
 /// Returns the list of built-in agents using the current user's home directory.
@@ -647,7 +645,7 @@ pub fn builtin_agents() -> Vec<Agent> {
             "codex",
             "Codex CLI",
             "coding",
-            ".agents/skills",
+            ".codex/skills",
             None,
             "codex",
         ),
@@ -1614,21 +1612,10 @@ pub async fn get_skill_installations(
 }
 
 pub async fn get_read_only_observed_agent_ids_for_skill(
-    pool: &DbPool,
-    skill_id: &str,
+    _pool: &DbPool,
+    _skill_id: &str,
 ) -> Result<Vec<String>, String> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT agent_id
-         FROM agent_skill_observations
-         WHERE skill_id = ?
-           AND is_read_only = 1
-           AND source_kind = 'compatibility'
-         ORDER BY agent_id",
-    )
-    .bind(skill_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())
+    Ok(Vec::new())
 }
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
