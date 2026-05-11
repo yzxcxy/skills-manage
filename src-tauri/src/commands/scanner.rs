@@ -631,6 +631,14 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         let mut found_install_ids = Vec::new();
         let mut found_observation_row_ids = Vec::new();
 
+        // Collect paths of sub-roots (e.g. .system caches) so the primary root
+        // can exclude skills that belong to a dedicated read-only source.
+        let subroot_paths: Vec<PathBuf> = existing_roots
+            .iter()
+            .filter(|r| r.source_kind.is_some())
+            .map(|r| r.path.clone())
+            .collect();
+
         for root in &existing_roots {
             let root_path = root
                 .source_root
@@ -640,11 +648,21 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 .into_owned();
 
             // Central directory uses a two-level layout: collection/skill.
-            let root_scanned = if is_central {
+            let mut root_scanned = if is_central {
                 scan_central_directory(&root.path)
             } else {
                 scan_skill_root(&root.path, is_central, ScanDirectoryOptions::nested())
             };
+
+            // Primary root should not claim skills that live inside a
+            // platform-specific read-only sub-directory (e.g. ~/.codex/skills/.system).
+            if root.source_kind.is_none() {
+                root_scanned.retain(|skill| {
+                    !subroot_paths
+                        .iter()
+                        .any(|subroot| Path::new(&skill.dir_path).starts_with(subroot))
+                });
+            }
 
             for skill in &root_scanned {
                 let now = Utc::now().to_rfc3339();
