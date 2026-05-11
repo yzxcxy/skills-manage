@@ -117,9 +117,7 @@ struct ClaudeInstalledPluginInstall {
 /// Read a SKILL.md file and extract the YAML frontmatter fields `name` and
 /// `description`. Returns `None` if the file is missing, cannot be read, lacks
 /// a frontmatter block, or is missing the required `name` field.
-pub fn parse_skill_md(path: &Path) -> Option<SkillInfo> {
-    let content = std::fs::read_to_string(path).ok()?;
-
+pub fn parse_skill_content(content: &str) -> Option<SkillInfo> {
     // Frontmatter must begin on the very first line with "---"
     let after_open = content
         .strip_prefix("---\n")
@@ -142,6 +140,11 @@ pub fn parse_skill_md(path: &Path) -> Option<SkillInfo> {
         .map(|s| s.to_string());
 
     Some(SkillInfo { name, description })
+}
+
+pub fn parse_skill_md(path: &Path) -> Option<SkillInfo> {
+    let content = std::fs::read_to_string(path).ok()?;
+    parse_skill_content(&content)
 }
 
 /// Determine how a skill directory entry was installed at the given path.

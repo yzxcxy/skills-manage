@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Plus,
   Pencil,
@@ -52,11 +52,13 @@ export function CollectionDetailView() {
   const centralAgents = useCentralSkillsStore((s) => s.agents);
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const installCentralSkill = useCentralSkillsStore((s) => s.installSkill);
-  const updateStatus = useCentralSkillsStore((s) => s.updateStatus);
+  const updateStatus = useCentralSkillsStore((s) => s.updateStatus ?? {});
   const updatingSkillId = useCentralSkillsStore((s) => s.updatingSkillId);
   const updateSkill = useCentralSkillsStore((s) => s.updateSkill);
+  const updateSkills = useCentralSkillsStore((s) => s.updateSkills);
   const checkUpdates = useCentralSkillsStore((s) => s.checkUpdates);
   const isCheckingUpdates = useCentralSkillsStore((s) => s.isCheckingUpdates);
+  const isUpdatingAllSkills = useCentralSkillsStore((s) => s.isUpdatingAllSkills ?? false);
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -168,6 +170,79 @@ export function CollectionDetailView() {
     }
   }
 
+  async function handleCheckUpdates() {
+    if (!currentDetail) return;
+    try {
+      const results = await checkUpdates(currentDetail.skills.map((s) => s.id));
+      if (results.length === 0) {
+        toast.info(t("skillUpdate.noCheckableSkills"));
+        return;
+      }
+      const failedChecks = results.filter((result) => result.error);
+      const count = results.filter((result) => result.hasUpdate).length;
+      if (failedChecks.length > 0) {
+        toast.error(
+          t("skillUpdate.checkPartialError", {
+            failed: failedChecks.length,
+            total: results.length,
+          })
+        );
+        return;
+      }
+      if (count > 0) {
+        toast.success(t("skillUpdate.foundUpdates", { count }));
+      } else {
+        toast.info(t("skillUpdate.noUpdates"));
+      }
+    } catch (err) {
+      toast.error(t("skillUpdate.checkError", { error: String(err) }));
+    }
+  }
+
+  async function handleUpdateSkill(skillId: string, skillName: string) {
+    if (!collectionId) return;
+    try {
+      await updateSkill(skillId);
+      await loadCollectionDetail(collectionId);
+      toast.success(t("skillUpdate.updateSuccess", { name: skillName }));
+    } catch (err) {
+      toast.error(t("skillUpdate.updateError", { error: String(err) }));
+    }
+  }
+
+  async function handleUpdateCollectionSkills() {
+    if (!currentDetail || !collectionId) return;
+    try {
+      const pendingIds = currentDetail.skills
+        .map((skill) => skill.id)
+        .filter((skillId) => updateStatus[skillId]);
+      const skillIds =
+        pendingIds.length > 0
+          ? pendingIds
+          : currentDetail.skills
+              .filter((skill) => Boolean(skill.remote_url))
+              .map((skill) => skill.id);
+      const result = await updateSkills(skillIds);
+      await loadCollectionDetail(collectionId);
+      if (result.failed.length > 0) {
+        toast.error(
+          t("skillUpdate.updateAllPartialError", {
+            updated: result.updated.length,
+            failed: result.failed.length,
+          })
+        );
+        return;
+      }
+      if (result.updated.length > 0) {
+        toast.success(t("skillUpdate.updateAllSuccess", { count: result.updated.length }));
+      } else {
+        toast.info(t("skillUpdate.noUpdates"));
+      }
+    } catch (err) {
+      toast.error(t("skillUpdate.updateError", { error: String(err) }));
+    }
+  }
+
   async function handleBatchUninstall(agentIds: string[]) {
     if (!collectionId) {
       return { succeeded: [], failed: [] };
@@ -210,6 +285,14 @@ export function CollectionDetailView() {
   }
 
   const detailName = currentDetail?.name ?? "";
+  const remoteSkillCount = useMemo(
+    () => currentDetail?.skills.filter((skill) => Boolean(skill.remote_url)).length ?? 0,
+    [currentDetail]
+  );
+  const availableUpdateCount = useMemo(() => {
+    if (!currentDetail) return 0;
+    return currentDetail.skills.filter((skill) => updateStatus[skill.id]).length;
+  }, [currentDetail, updateStatus]);
 
   return (
     <div className="flex flex-col h-full">
@@ -290,13 +373,25 @@ export function CollectionDetailView() {
               </span>
               <div className="flex items-center gap-2">
                 <Button
-                  variant="outline"
+                  variant={availableUpdateCount > 0 ? "default" : "outline"}
                   size="sm"
-                  onClick={() => checkUpdates(currentDetail.skills.map((s) => s.id))}
-                  disabled={currentDetail.skills.length === 0 || isCheckingUpdates}
+                  onClick={
+                    availableUpdateCount > 0
+                      ? handleUpdateCollectionSkills
+                      : handleCheckUpdates
+                  }
+                  disabled={remoteSkillCount === 0 || isCheckingUpdates || isUpdatingAllSkills}
                 >
-                  <RefreshCw className={`size-3.5 ${isCheckingUpdates ? "animate-spin" : ""}`} />
-                  <span>{t("skillUpdate.checkUpdates")}</span>
+                  <RefreshCw
+                    className={`size-3.5 ${
+                      isCheckingUpdates || isUpdatingAllSkills ? "animate-spin" : ""
+                    }`}
+                  />
+                  <span>
+                    {availableUpdateCount > 0
+                      ? t("skillUpdate.updateAvailableCount", { count: availableUpdateCount })
+                      : t("skillUpdate.checkUpdates")}
+                  </span>
                 </Button>
                 <Button
                   variant="outline"
@@ -358,7 +453,11 @@ export function CollectionDetailView() {
                       onInstallTo={() => handleInstallSingleSkillClick(skill.id)}
                       onRemove={() => handleRemoveSkill(skill.id)}
                       hasUpdate={updateStatus[skill.id] ?? false}
-                      onUpdate={skill.remote_url ? () => updateSkill(skill.id) : undefined}
+                      onUpdate={
+                        skill.remote_url
+                          ? () => handleUpdateSkill(skill.id, skill.name)
+                          : undefined
+                      }
                       isUpdating={updatingSkillId === skill.id}
                     />
                   ))}

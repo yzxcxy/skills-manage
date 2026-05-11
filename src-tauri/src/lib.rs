@@ -119,6 +119,7 @@ pub fn run() {
             // Skill Updates
             commands::skill_updates::check_skill_updates,
             commands::skill_updates::update_skill,
+            commands::skill_updates::update_skills,
             // Updater
             commands::updater::check_update,
             commands::updater::get_app_version,

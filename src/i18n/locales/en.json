@@ -150,14 +150,20 @@
   "skillUpdate": {
     "checkUpdates": "Check updates",
     "checkAllUpdates": "Check all updates",
+    "updateAll": "Update all",
+    "updateAvailableCount": "Update {{count}}",
     "updateAvailable": "Update available",
     "updateAvailableShort": "{{count}} updates",
     "update": "Update",
     "updateLabel": "Update skill {{name}}",
     "updateSuccess": "{{name}} updated",
     "updateError": "Update failed: {{error}}",
+    "updateAllSuccess": "Updated {{count}} skill(s)",
+    "updateAllPartialError": "Updated {{updated}}, {{failed}} failed",
     "foundUpdates": "Found {{count}} skill(s) with updates",
     "noUpdates": "All skills are up to date",
+    "noCheckableSkills": "No remote-source skills can be checked for updates",
+    "checkPartialError": "{{failed}} of {{total}} skill checks failed. Retry later or inspect the remote sources.",
     "checkError": "Check updates failed: {{error}}"
   },
   "centralBundleDrawer": {

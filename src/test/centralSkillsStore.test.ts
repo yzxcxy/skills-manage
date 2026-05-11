@@ -147,6 +147,10 @@ describe("centralSkillsStore", () => {
       deletingBundlePath: null,
       togglingAgentId: null,
       error: null,
+      updateStatus: {},
+      isCheckingUpdates: false,
+      updatingSkillId: null,
+      isUpdatingAllSkills: false,
     });
     vi.clearAllMocks();
   });
@@ -166,6 +170,10 @@ describe("centralSkillsStore", () => {
     expect(state.togglingAgentId).toBeNull();
     expect(state.deletingSkillId).toBeNull();
     expect(state.deletingBundlePath).toBeNull();
+    expect(state.updateStatus).toEqual({});
+    expect(state.isCheckingUpdates).toBe(false);
+    expect(state.updatingSkillId).toBeNull();
+    expect(state.isUpdatingAllSkills).toBe(false);
     expect(state.error).toBeNull();
   });
 
@@ -515,5 +523,97 @@ describe("centralSkillsStore", () => {
     const state = useCentralSkillsStore.getState();
     expect(state.error).toContain("toggle failed");
     expect(state.togglingAgentId).toBeNull();
+  });
+
+  // ── skill updates ────────────────────────────────────────────────────────
+
+  it("checkUpdates stores and returns update results", async () => {
+    const updateResults = [
+      {
+        skillId: "frontend-design",
+        skillName: "frontend-design",
+        hasUpdate: true,
+        remoteUrl: "https://example.com/frontend/SKILL.md",
+        error: null,
+      },
+      {
+        skillId: "code-reviewer",
+        skillName: "code-reviewer",
+        hasUpdate: false,
+        remoteUrl: "https://example.com/review/SKILL.md",
+        error: null,
+      },
+    ];
+    vi.mocked(invoke).mockResolvedValueOnce(updateResults);
+
+    const result = await useCentralSkillsStore.getState().checkUpdates();
+
+    expect(invoke).toHaveBeenCalledWith("check_skill_updates", { skillIds: null });
+    expect(result).toEqual(updateResults);
+    expect(useCentralSkillsStore.getState().updateStatus).toEqual({
+      "frontend-design": true,
+      "code-reviewer": false,
+    });
+    expect(useCentralSkillsStore.getState().isCheckingUpdates).toBe(false);
+  });
+
+  it("checkUpdates clears stale scoped statuses for skills with no remote result", async () => {
+    useCentralSkillsStore.setState({
+      updateStatus: {
+        "frontend-design": true,
+        "code-reviewer": true,
+      },
+    });
+    vi.mocked(invoke).mockResolvedValueOnce([
+      {
+        skillId: "frontend-design",
+        skillName: "frontend-design",
+        hasUpdate: false,
+        remoteUrl: "https://example.com/frontend/SKILL.md",
+        error: null,
+      },
+    ]);
+
+    await useCentralSkillsStore
+      .getState()
+      .checkUpdates(["frontend-design", "code-reviewer"]);
+
+    expect(useCentralSkillsStore.getState().updateStatus).toEqual({
+      "frontend-design": false,
+      "code-reviewer": false,
+    });
+  });
+
+  it("updateSkills clears updated statuses and refreshes central skills", async () => {
+    useCentralSkillsStore.setState({
+      updateStatus: {
+        "frontend-design": true,
+        "code-reviewer": true,
+      },
+    });
+    const batchResult = {
+      updated: ["frontend-design"],
+      skipped: ["code-reviewer"],
+      failed: [],
+    };
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(batchResult)
+      .mockResolvedValueOnce(mockSkills);
+
+    const result = await useCentralSkillsStore
+      .getState()
+      .updateSkills(["frontend-design", "code-reviewer"]);
+
+    expect(invoke).toHaveBeenCalledWith("update_skills", {
+      skillIds: ["frontend-design", "code-reviewer"],
+    });
+    expect(invoke).toHaveBeenCalledWith("get_central_skills");
+    expect(result).toEqual(batchResult);
+    expect(useCentralSkillsStore.getState().skills).toEqual(mockSkills);
+    expect(useCentralSkillsStore.getState().updateStatus).toEqual({
+      "frontend-design": false,
+      "code-reviewer": false,
+    });
+    expect(useCentralSkillsStore.getState().isUpdatingAllSkills).toBe(false);
   });
 });

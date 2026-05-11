@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDownCircle,
   FileInput,
   GitBranch,
   Layers,
@@ -144,9 +143,11 @@ export function CentralSkillsView() {
 
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const centralSkills = useCentralSkillsStore((s) => s.skills);
-  const updateStatus = useCentralSkillsStore((s) => s.updateStatus);
+  const updateStatus = useCentralSkillsStore((s) => s.updateStatus ?? {});
   const isCheckingUpdates = useCentralSkillsStore((s) => s.isCheckingUpdates);
+  const isUpdatingAllSkills = useCentralSkillsStore((s) => s.isUpdatingAllSkills ?? false);
   const checkUpdates = useCentralSkillsStore((s) => s.checkUpdates);
+  const updateSkills = useCentralSkillsStore((s) => s.updateSkills);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -185,6 +186,16 @@ export function CentralSkillsView() {
     );
   }, [collections, searchQuery]);
 
+  const remoteSkillCount = useMemo(
+    () => centralSkills.filter((skill) => Boolean(skill.remote_url)).length,
+    [centralSkills]
+  );
+
+  const availableUpdateCount = useMemo(
+    () => Object.values(updateStatus).filter(Boolean).length,
+    [updateStatus]
+  );
+
   async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -205,8 +216,22 @@ export function CentralSkillsView() {
 
   async function handleCheckAllUpdates() {
     try {
-      await checkUpdates();
-      const hasUpdates = Object.values(updateStatus).filter(Boolean).length;
+      const results = await checkUpdates();
+      if (results.length === 0) {
+        toast.info(t("skillUpdate.noCheckableSkills"));
+        return;
+      }
+      const failedChecks = results.filter((result) => result.error);
+      const hasUpdates = results.filter((result) => result.hasUpdate).length;
+      if (failedChecks.length > 0) {
+        toast.error(
+          t("skillUpdate.checkPartialError", {
+            failed: failedChecks.length,
+            total: results.length,
+          })
+        );
+        return;
+      }
       if (hasUpdates > 0) {
         toast.success(t("skillUpdate.foundUpdates", { count: hasUpdates }));
       } else {
@@ -214,6 +239,35 @@ export function CentralSkillsView() {
       }
     } catch (err) {
       toast.error(t("skillUpdate.checkError", { error: String(err) }));
+    }
+  }
+
+  async function handleUpdateAllSkills() {
+    try {
+      const skillIds =
+        availableUpdateCount > 0
+          ? Object.entries(updateStatus)
+              .filter(([, hasUpdate]) => hasUpdate)
+              .map(([skillId]) => skillId)
+          : undefined;
+      const result = await updateSkills(skillIds);
+      if (result.failed.length > 0) {
+        toast.error(
+          t("skillUpdate.updateAllPartialError", {
+            updated: result.updated.length,
+            failed: result.failed.length,
+          })
+        );
+        return;
+      }
+      if (result.updated.length > 0) {
+        toast.success(t("skillUpdate.updateAllSuccess", { count: result.updated.length }));
+      } else {
+        toast.info(t("skillUpdate.noUpdates"));
+      }
+      await Promise.all([loadCollections(), refreshCounts()]);
+    } catch (err) {
+      toast.error(t("skillUpdate.updateError", { error: String(err) }));
     }
   }
 
@@ -304,13 +358,23 @@ export function CentralSkillsView() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <Button
-              variant="outline"
+              variant={availableUpdateCount > 0 ? "default" : "outline"}
               size="sm"
-              onClick={handleCheckAllUpdates}
-              disabled={isCheckingUpdates}
+              onClick={
+                availableUpdateCount > 0 ? handleUpdateAllSkills : handleCheckAllUpdates
+              }
+              disabled={remoteSkillCount === 0 || isCheckingUpdates || isUpdatingAllSkills}
             >
-              <ArrowDownCircle className={`size-3.5 ${isCheckingUpdates ? "animate-spin" : ""}`} />
-              <span>{t("skillUpdate.checkAllUpdates")}</span>
+              <RefreshCw
+                className={`size-3.5 ${
+                  isCheckingUpdates || isUpdatingAllSkills ? "animate-spin" : ""
+                }`}
+              />
+              <span>
+                {availableUpdateCount > 0
+                  ? t("skillUpdate.updateAvailableCount", { count: availableUpdateCount })
+                  : t("skillUpdate.checkAllUpdates")}
+              </span>
             </Button>
             <Button
               variant="outline"

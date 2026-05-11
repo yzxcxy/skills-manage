@@ -3,6 +3,7 @@ import { invoke, isTauriRuntime } from "@/lib/tauri";
 import {
   AgentWithStatus,
   BatchInstallResult,
+  BatchSkillUpdateResult,
   CentralSkillBundle,
   CentralSkillBundleDetail,
   CentralSkillBundleDeletePreview,
@@ -85,6 +86,7 @@ interface CentralSkillsState {
   updateStatus: Record<string, boolean>;
   isCheckingUpdates: boolean;
   updatingSkillId: string | null;
+  isUpdatingAllSkills: boolean;
 
   // Actions
   loadCentralSkills: () => Promise<void>;
@@ -109,8 +111,9 @@ interface CentralSkillsState {
   ) => Promise<DeleteCentralSkillBundleResult>;
   clearBundleDeletePreview: () => void;
   togglePlatformLink: (skillId: string, agentId: string) => Promise<void>;
-  checkUpdates: (skillIds?: string[]) => Promise<void>;
+  checkUpdates: (skillIds?: string[]) => Promise<SkillUpdateInfo[]>;
   updateSkill: (skillId: string) => Promise<void>;
+  updateSkills: (skillIds?: string[]) => Promise<BatchSkillUpdateResult>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -132,6 +135,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   updateStatus: {},
   isCheckingUpdates: false,
   updatingSkillId: null,
+  isUpdatingAllSkills: false,
 
   /**
    * Load all Central Skills with per-platform link status, along with the
@@ -390,13 +394,23 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       const results = await invoke<SkillUpdateInfo[]>("check_skill_updates", {
         skillIds: skillIds ?? null,
       });
-      const status: Record<string, boolean> = {};
-      for (const r of results) {
-        status[r.skillId] = r.hasUpdate;
-      }
-      set({ updateStatus: status, isCheckingUpdates: false });
+      set((state) => {
+        const status =
+          skillIds === undefined ? {} : { ...state.updateStatus };
+        if (skillIds) {
+          for (const skillId of skillIds) {
+            status[skillId] = false;
+          }
+        }
+        for (const r of results) {
+          status[r.skillId] = r.hasUpdate;
+        }
+        return { updateStatus: status, isCheckingUpdates: false };
+      });
+      return results;
     } catch (err) {
       set({ error: String(err), isCheckingUpdates: false });
+      throw err;
     }
   },
 
@@ -416,6 +430,27 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       }));
     } catch (err) {
       set({ error: String(err), updatingSkillId: null });
+      throw err;
+    }
+  },
+
+  updateSkills: async (skillIds) => {
+    set({ isUpdatingAllSkills: true, error: null });
+    try {
+      const result = await invoke<BatchSkillUpdateResult>("update_skills", {
+        skillIds: skillIds ?? null,
+      });
+      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      set((state) => {
+        const updateStatus = { ...state.updateStatus };
+        for (const skillId of [...result.updated, ...result.skipped]) {
+          updateStatus[skillId] = false;
+        }
+        return { skills, updateStatus, isUpdatingAllSkills: false };
+      });
+      return result;
+    } catch (err) {
+      set({ error: String(err), isUpdatingAllSkills: false });
       throw err;
     }
   },

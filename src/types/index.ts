@@ -400,6 +400,18 @@ export interface SkillUpdateInfo {
   error?: string | null;
 }
 
+export interface FailedSkillUpdate {
+  skillId: string;
+  skillName: string;
+  error: string;
+}
+
+export interface BatchSkillUpdateResult {
+  updated: string[];
+  skipped: string[];
+  failed: FailedSkillUpdate[];
+}
+
 // ─── Updater Types ────────────────────────────────────────────────────────────
 
 export interface UpdateCheckResult {
