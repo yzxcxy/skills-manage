@@ -20,6 +20,9 @@ import { setupExplanationStreamListeners } from "@/lib/explanationStream";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import i18n from "@/i18n";
+import { FileTreeNode } from "@/components/skill/FileTreeNode";
+import { buildSkillDirectoryTree } from "@/lib/fileTree";
+import type { SelectedSkillFile, SkillsShFileEntry } from "@/types";
 
 export interface MarketplaceSkillDetail {
   id: string;
@@ -30,6 +33,8 @@ export interface MarketplaceSkillDetail {
   sourceLabel?: string;
   sourceUrl?: string | null;
   installed?: boolean;
+  files?: SkillsShFileEntry[];
+  skillsShSource?: string;
 }
 
 interface MarketplaceSkillDetailDrawerProps {
@@ -58,17 +63,79 @@ export function MarketplaceSkillDetailDrawer({
   const [explanation, setExplanation] = useState<string | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
   const [explanationError, setExplanationError] = useState<string | null>(null);
+  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(new Set());
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const explanationRequestRef = useRef(0);
   const explanationUnlistenRef = useRef<(() => void) | null>(null);
   const browserMode = !isTauriRuntime();
+
+  const directoryTree = useMemo(() => {
+    return skill?.files ? buildSkillDirectoryTree(skill.files) : [];
+  }, [skill?.files]);
 
   const cleanupExplanation = useCallback(() => {
     explanationUnlistenRef.current?.();
     explanationUnlistenRef.current = null;
   }, []);
 
+  const getFileDownloadUrl = useCallback(
+    (filePath: string): string => {
+      if (!skill?.downloadUrl) return "";
+      const rawBase = "https://raw.githubusercontent.com/";
+      if (!skill.downloadUrl.startsWith(rawBase)) return "";
+      const base = skill.downloadUrl.replace(/\/SKILL\.md(?:[#?].*)?$/, "");
+      const rest = base.slice(rawBase.length);
+      const parts = rest.split("/");
+      if (parts.length < 3) return "";
+      return `${rawBase}${parts[0]}/${parts[1]}/${parts[2]}/${filePath}`;
+    },
+    [skill?.downloadUrl],
+  );
+
+  const fetchFileContent = useCallback(async (filePath: string) => {
+    if (!skill) return;
+    setIsLoadingContent(true);
+    try {
+      if (skill.skillsShSource && isTauriRuntime()) {
+        const nextContent = await invoke<string>("read_skills_sh_file", {
+          source: skill.skillsShSource,
+          filePath,
+        });
+        setContent(nextContent);
+        return;
+      }
+
+      const url = getFileDownloadUrl(filePath);
+      if (!url) {
+        throw new Error("Unable to resolve file URL");
+      }
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      setContent(await resp.text());
+    } catch {
+      setContent("Failed to load file content.");
+    } finally {
+      setIsLoadingContent(false);
+    }
+  }, [getFileDownloadUrl, skill]);
+
   const fetchContent = useCallback(async () => {
     if (!open || !skill?.downloadUrl) {
+      return;
+    }
+
+    if (skill.files && skill.files.length > 0) {
+      const skillMd = skill.files.find((file) => !file.is_dir && file.name === "SKILL.md");
+      setExpandedDirectories(new Set(skill.files.filter((file) => file.is_dir).map((file) => file.path)));
+      if (skillMd) {
+        setSelectedFilePath(skillMd.path);
+        await fetchFileContent(skillMd.path);
+        return;
+      }
+      setSelectedFilePath(null);
+      setContent("");
       return;
     }
 
@@ -84,17 +151,18 @@ export function MarketplaceSkillDetailDrawer({
     } finally {
       setIsLoadingContent(false);
     }
-  }, [open, skill?.downloadUrl]);
+  }, [fetchFileContent, open, skill]);
 
   useEffect(() => {
     if (open && skill?.downloadUrl) {
       setContent("");
       setExplanation(null);
       setExplanationError(null);
+      setSelectedFilePath(null);
       setViewMode("markdown");
       void fetchContent();
     }
-  }, [open, skill?.downloadUrl, fetchContent]);
+  }, [open, skill?.id, skill?.downloadUrl, fetchContent]);
 
   useEffect(() => {
     if (!open) {
@@ -109,6 +177,24 @@ export function MarketplaceSkillDetailDrawer({
     if (!content) return { frontmatterRaw: "", frontmatterData: {}, body: "" };
     return parseFrontmatter(content);
   }, [content]);
+
+  function handleToggleDirectory(path: string) {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectFile(file: SelectedSkillFile) {
+    setSelectedFilePath(file.path);
+    setViewMode(file.path.toLowerCase().endsWith(".md") ? "markdown" : "raw");
+    void fetchFileContent(file.path);
+  }
 
   async function handleExplain() {
     if (!content || browserMode || !skill) return;
@@ -279,12 +365,14 @@ export function MarketplaceSkillDetailDrawer({
                     <Loader2 className="size-4 animate-spin" />
                     {t("common.loading")}
                   </div>
-                ) : viewMode === "markdown" ? (
+                ) : viewMode === "markdown" && (!selectedFilePath || selectedFilePath.toLowerCase().endsWith(".md")) ? (
                   <div className="space-y-4">
-                    <SkillFrontmatterCard
-                      data={displayContent.frontmatterData}
-                      raw={displayContent.frontmatterRaw}
-                    />
+                    {!selectedFilePath || selectedFilePath.endsWith("/SKILL.md") || selectedFilePath === "SKILL.md" ? (
+                      <SkillFrontmatterCard
+                        data={displayContent.frontmatterData}
+                        raw={displayContent.frontmatterRaw}
+                      />
+                    ) : null}
                     <div className="prose prose-sm dark:prose-invert max-w-none rounded-xl border border-border/70 bg-background/60 p-4 markdown-body">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {displayContent.body}
@@ -325,6 +413,27 @@ export function MarketplaceSkillDetailDrawer({
                 data-testid="skill-detail-right-sidebar"
                 className="w-full shrink-0 border-t border-border overflow-y-auto p-4 space-y-5 md:w-64 md:border-t-0 md:border-l"
               >
+                {directoryTree.length > 0 ? (
+                  <section>
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80 mb-2">
+                      {t("detail.files")}
+                    </div>
+                    <div className="max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2">
+                      {directoryTree.map((node) => (
+                        <FileTreeNode
+                          key={node.path}
+                          node={node}
+                          level={0}
+                          selectedPath={selectedFilePath}
+                          expandedDirectories={expandedDirectories}
+                          onToggleDirectory={handleToggleDirectory}
+                          onSelectFile={handleSelectFile}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
                 <section>
                   <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80 mb-2">
                     {t("detail.metadata")}
